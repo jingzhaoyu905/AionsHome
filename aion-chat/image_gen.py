@@ -1,6 +1,6 @@
 """
 AI 生图模块：Codex 登录额度或 OpenAI 兼容接口，未配置时沿用 Gemini
-支持 SELFIE（带参考图）和 DRAW（纯文本）两种模式
+支持 SELFIE（自拍）和 DRAW（自由绘图），两者均可带人物锚点
 """
 
 import base64, re, mimetypes, time
@@ -60,7 +60,7 @@ async def _generate_openai_image(prompt: str, is_selfie: bool, source_identity: 
             content.extend([{'type': 'text', 'text': f"下面的参考照片对应人物：{ref['name']}。保持此人的面部特征，不与其他角色混淆。"},
                             {'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,{encoded}'}}])
         reference_bytes = None
-        if is_selfie:
+        if is_selfie and not references:
             reference = _selfie_reference_path(source_identity)
             if reference.exists():
                 reference_bytes = reference.read_bytes()
@@ -125,7 +125,7 @@ async def generate_image(prompt: str, is_selfie: bool = False, source_identity: 
     """
     调用设置中的生图来源，未配置时使用 Gemini；保存到相册并返回 uploads 相对路径。
     is_selfie=True 时自动附带参考图。
-    失败返回 None；小剧场可请求保留 Codex 异常以展示失败原因。
+    失败返回 None；调用方可请求保留 Codex 异常以展示失败原因。
     """
     if SETTINGS.get('image_gen_provider') == 'codex':
         if raise_errors:
@@ -156,7 +156,7 @@ async def generate_image(prompt: str, is_selfie: bool = False, source_identity: 
 
     # SELFIE 模式：附带参考图
     ref_bytes = None
-    if is_selfie:
+    if is_selfie and not references:
         reference_image_path = _selfie_reference_path(source_identity)
         if reference_image_path.exists():
             ref_bytes = reference_image_path.read_bytes()
@@ -224,3 +224,13 @@ async def generate_image(prompt: str, is_selfie: bool = False, source_identity: 
     except Exception as e:
         print(f"[image_gen] 生图异常: {e}")
         return None
+
+
+async def generate_chat_image(prompt: str, is_selfie: bool = False, source_identity: str = ''):
+    """Resolve the chat command's cast before dispatching to any image provider."""
+    from image_anchors import resolve_chat_references
+    prompt, references = await resolve_chat_references(prompt, is_selfie, source_identity)
+    kwargs = {'is_selfie': is_selfie, 'source_identity': source_identity, 'raise_errors': True}
+    if references:
+        kwargs['references'] = references
+    return await generate_image(prompt, **kwargs)

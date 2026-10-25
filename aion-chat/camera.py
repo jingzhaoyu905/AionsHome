@@ -1920,6 +1920,7 @@ class CameraMonitor:
             _consume_background_realtime_stream,
             _new_background_meta,
             _process_background_reply_commands,
+            _tts_voice_for_target,
             schedule_mgr,
         )
         target = target_override or schedule_mgr._resolve_target({"origin": "aion"})
@@ -2027,17 +2028,16 @@ class CameraMonitor:
         has_error = False
         error_text = None
 
-        # TTS：检查是否有前端开了 TTS
+        # Follow the destination's switch and speaker voice, just like Connor.
         core_tts = None
-        if manager.any_tts_enabled():
-            tts_voice = manager.get_tts_voice()
-            if tts_voice:
-                core_tts = TTSStreamer(
-                    core_msg_id,
-                    tts_voice,
-                    manager,
-                    low_latency_first_chunk=resolve_model_transport_mode(model_key) == "safe_live",
-                )
+        tts_voice = _tts_voice_for_target(is_chatroom, "aion")
+        if tts_voice:
+            core_tts = TTSStreamer(
+                core_msg_id,
+                tts_voice,
+                manager,
+                low_latency_first_chunk=resolve_model_transport_mode(model_key) == "safe_live",
+            )
 
         _temp = SETTINGS.get("temperature")
 

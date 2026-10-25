@@ -1,6 +1,9 @@
 import tempfile
 import unittest
 import inspect
+import ast
+import textwrap
+from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -11,6 +14,28 @@ import camera
 
 
 class SentinelDispatchTests(unittest.TestCase):
+    def test_aion_sentinel_uses_target_voice_even_when_private_tts_is_on(self):
+        from schedule import _tts_voice_for_target
+        tree = ast.parse(textwrap.dedent(inspect.getsource(camera.CameraMonitor._call_core)))
+        body = tree.body[0].body
+        # Run the real synthesis setup, without invoking cameras or an AI provider.
+        start = next(i for i, node in enumerate(body) if isinstance(node, ast.Assign)
+                     and any(isinstance(t, ast.Name) and t.id == 'core_tts' for t in node.targets))
+        end = next(i for i in range(start + 1, len(body)) if isinstance(body[i], ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == '_temp' for t in body[i].targets))
+        for enabled, expected in [(False, None), (True, 'group-voice')]:
+            context = dict(is_chatroom=True, core_msg_id='sentinel', model_key='model',
+                           manager=SimpleNamespace(any_tts_enabled=lambda: True,
+                                                   get_tts_voice=lambda: 'private-voice'),
+                           _tts_voice_for_target=_tts_voice_for_target,
+                           resolve_model_transport_mode=lambda _: 'safe_live',
+                           TTSStreamer=lambda msg, voice, manager, **kw: voice)
+            with patch('chatroom.load_chatroom_config', return_value={
+                'tts_enabled': enabled, 'tts_aion_voice': 'group-voice'
+            }):
+                exec(compile(ast.Module(body=body[start:end], type_ignores=[]), 'sentinel_tts', 'exec'), context)
+            self.assertEqual(context['core_tts'], expected)
+
     def test_fixed_modes_override_sentinel_target(self):
         self.assertEqual(
             ["aion"],

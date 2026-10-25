@@ -1,3 +1,4 @@
+import ast
 import unittest
 from pathlib import Path
 
@@ -33,6 +34,23 @@ class PhoneCameraAlertPayloadTests(unittest.TestCase):
         payload = camera.build_monitor_alert_data("check")
 
         self.assertNotIn("phone_camera_native_capture", payload)
+
+    def test_private_cam_check_events_assign_phone_audio_to_native_capture(self):
+        tree = ast.parse((ROOT / "routes" / "chat.py").read_text(encoding="utf-8"))
+        assignments = [node for node in ast.walk(tree)
+                       if isinstance(node, ast.Assign) and any(
+                           isinstance(target, ast.Name) and target.id == "cam_data"
+                           for target in node.targets)]
+        self.assertTrue(assignments)
+        for source in ("local", "phone"):
+            camera.cam.cfg["active_source"] = source
+            for assignment in assignments:
+                context = dict(conv_id="conv", model_key="model", ai_msg_id="msg",
+                               build_monitor_alert_data=camera.build_monitor_alert_data)
+                exec(compile(ast.Module(body=[assignment], type_ignores=[]), "cam_payload", "exec"), context)
+                payload = context["cam_data"]
+                self.assertEqual(payload["type"], "cam_check")
+                self.assertEqual(bool(payload.get("phone_camera_native_capture")), source == "phone")
 
     def test_all_monitor_alert_producers_use_payload_helper(self):
         sources = {

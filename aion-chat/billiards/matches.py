@@ -15,6 +15,11 @@ def is_active(game):
     return match_info(game)['status'] == 'active'
 
 
+def has_history(game):
+    """Finished racks remain readable while their series awaits another invitation."""
+    return not is_active(game) or bool(game.get('result_reports'))
+
+
 def reserves_players(game):
     """Saved progress occupies players only while the table is running."""
     return is_active(game) and game['status'] == 'running'

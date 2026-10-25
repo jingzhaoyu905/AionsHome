@@ -460,8 +460,10 @@ const _ttsEngine = (function() {
 let crTtsAudio = _ttsEngine.audio;
 
 function crTtsPlaybackAllowed() {
-  return true;
+  return window.AionTtsAudio?.isForeground?.() !== false;
 }
+
+window.onAionAppForegroundChanged = () => crSendTTSState();
 
 function crCurrentTTSVoice() {
   return crTtsAionVoice || crTtsConnorVoice || '';
@@ -1391,6 +1393,7 @@ function crAmbientCanRun() {
 }
 
 async function crAmbientSyncRunning(options = {}) {
+  if (_crVoiceRecording || _crVoiceFinishing) return;
   if (!crAmbientVoiceEnabled) {
     crAmbientPausedForTts = false;
     if (crAmbientResumeRetryTimer) { clearTimeout(crAmbientResumeRetryTimer); crAmbientResumeRetryTimer = null; }
@@ -1427,6 +1430,7 @@ async function crAmbientSyncRunning(options = {}) {
 }
 
 async function crAmbientStart() {
+  if (_crVoiceRecording || _crVoiceFinishing) return;
   if (crAmbientIsCapturing() || !crAmbientCanRun()) return;
   const bridge = crAmbientNativeBridge();
   if (bridge) {
@@ -1441,6 +1445,11 @@ async function crAmbientStart() {
     crAmbientStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
+    if (_crVoiceRecording || _crVoiceFinishing) {
+      crAmbientStream.getTracks().forEach(track => track.stop());
+      crAmbientStream = null;
+      return;
+    }
     crAmbientAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
     await crAmbientAudioCtx.resume().catch(() => {});
     const source = crAmbientAudioCtx.createMediaStreamSource(crAmbientStream);
@@ -3110,6 +3119,47 @@ function crBandVibrationNoteHtml(atts) {
   return `<div class="band-vibration-line">${esc(note.label || fallback)}</div>`;
 }
 
+function crPrivateWhisperNoteHtml(message) {
+  const note = (message.attachments || []).find(att => att?.type === 'private_whisper_sent');
+  if (!note) return '';
+  const path = note.target_type === 'conversation' ? '/chat?conv='
+    : note.target_type === 'room' ? '/chatroom?room=' : '';
+  if (!path || !note.target_id) return '<div class="private-whisper-note">✉ 已给你发了私聊</div>';
+  return `<a class="private-whisper-note" href="${esc(path + encodeURIComponent(note.target_id))}" data-target-type="${esc(note.target_type)}" data-target-id="${esc(note.target_id)}" onclick="crOpenPrivateWhisper(event, this)">✉ 已给你发了私聊 <span aria-hidden="true">›</span></a>`;
+}
+
+async function crOpenPrivateWhisper(event, link) {
+  event.stopPropagation();
+  if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  try {
+    // Group and companion-private rooms share this page. Reopening its cached
+    // URL reloads once, then does nothing after switching back to the group.
+    if (link.dataset.targetType === 'room') {
+      event.preventDefault();
+      const roomId = link.dataset.targetId;
+      if (!rooms.some(room => room.id === roomId)) {
+        rooms = await api('/rooms', { cache: 'no-store' });
+      }
+      if (!rooms.some(room => room.id === roomId)) {
+        toast('对应的私聊窗口已不存在');
+        return;
+      }
+      await selectRoom(roomId);
+      return;
+    }
+    if (window.parent === window) return; // Main-chat links stay native on standalone pages.
+    const parent = window.parent;
+    if (link.dataset.targetType === 'conversation'
+        && typeof parent.selectConv === 'function' && typeof parent.closeSubPage === 'function') {
+      event.preventDefault();
+      parent.closeSubPage(true);
+      await parent.selectConv(link.dataset.targetId);
+    }
+  } catch (error) {
+    toast('打开私聊失败：' + error.message);
+  }
+}
+
 function msgHTML(m, nextMessage = null) {
   const sender = m.sender || 'user';
   const pat = window.AionPat?.isPat(m);
@@ -3214,6 +3264,7 @@ function msgHTML(m, nextMessage = null) {
           ${toyHtml}
           ${hasWishFulfillmentAtt || hasDateSummaryAtt || hasLoungeReportAtt || isVoiceOnly ? '' : attHtml}
           ${bandVibrationHtml}
+          ${crPrivateWhisperNoteHtml(m)}
           ${inlineToy?.noticeHtml ? `<div class="system-notice">${inlineToy.noticeHtml}</div>` : ''}
         </div>
       </div>
@@ -3849,6 +3900,13 @@ function endStreamingBubble(messageOrAttachments) {
   const attachments = finalMsg ? finalMsg.attachments : messageOrAttachments;
 
   if (finalMsg?.id) crMessagesById[finalMsg.id] = finalMsg;
+  // A whisper-only reply has no public chunks to create a streaming row.
+  if (finalMsg?.id && !streamRow) {
+    if (!messagesEl.querySelector(`[data-msg-id="${finalMsg.id}"]`)) appendMessage(finalMsg);
+    streamingBubble = null;
+    streamingText = '';
+    return;
+  }
   if (finalMsg?.id && streamRow) {
     const div = document.createElement('div');
     div.innerHTML = msgHTML(finalMsg);
@@ -5463,6 +5521,7 @@ function crApplySettingsSync(data) {
   const cfg = data?.config || null;
   const room = data?.room || null;
   if (cfg) {
+    const wasTtsEnabled = crTtsEnabled;
     applyChatroomNames(cfg);
     chatroomModel = cfg.aion_model || chatroomModel;
     chatroomConnorModel = cfg.connor_model || chatroomConnorModel;
@@ -5470,6 +5529,12 @@ function crApplySettingsSync(data) {
     crTtsEnabled = !!(cfg.tts_enabled ?? crTtsEnabled);
     crTtsAionVoice = cfg.tts_aion_voice ?? crTtsAionVoice;
     crTtsConnorVoice = cfg.tts_connor_voice ?? crTtsConnorVoice;
+    if (wasTtsEnabled !== crTtsEnabled) {
+      crTtsAcceptAfter = Date.now() / 1000;
+      crTtsPlaybackActiveAt = crTtsAcceptAfter;
+      if (!crTtsEnabled) crStopTTS();
+    }
+    crSendTTSState();
     crApplyAmbientVoiceConfig(cfg);
     updateHeaderActions();
   }
@@ -6093,36 +6158,12 @@ function imageInteractionAttrs() {
   return 'onclick="return openImageFromElement(event, this)" oncontextmenu="showImageSaveMenu(ChatImagePreview.original(this)); return false;" onpointerdown="startImageLongPress(event, ChatImagePreview.original(this))" onpointermove="moveImageLongPress(event)" onpointerup="cancelImageLongPress()" onpointerleave="cancelImageLongPress()" onpointercancel="cancelImageLongPress()" draggable="false"';
 }
 
-function bindImageSaveOnly(img, clickHandler) {
-  if (!img) return;
-  img.oncontextmenu = (event) => {
-    event.preventDefault();
-    showImageSaveMenu(img.src);
-    return false;
-  };
-  img.onpointerdown = (event) => startImageLongPress(event, img.src);
-  img.onpointermove = moveImageLongPress;
-  img.onpointerup = cancelImageLongPress;
-  img.onpointerleave = cancelImageLongPress;
-  img.onpointercancel = cancelImageLongPress;
-  img.onclick = (event) => {
-    event.stopPropagation();
-    if (Date.now() < imageLongPressSuppressClickUntil) {
-      event.preventDefault();
-      return false;
-    }
-    if (typeof clickHandler === 'function') clickHandler();
-    return false;
-  };
-  img.draggable = false;
-}
-
 function openImageFromElement(event, img) {
   if (Date.now() < imageLongPressSuppressClickUntil) {
     if (event) event.preventDefault();
     return false;
   }
-  openImageViewer(ChatImagePreview.original(img));
+  openImageViewer(ChatImagePreview.original(img), img);
   return false;
 }
 
@@ -6287,6 +6328,7 @@ function crBuildLinkPreviewCard(item) {
 function renderAttachments(atts, options = {}) {
   if (!atts || !atts.length) return '';
   let html = '';
+  const images = [];
   let musicHtml = '';
   let wishHtml = '';
   atts.forEach(item => {
@@ -6346,12 +6388,14 @@ function renderAttachments(atts, options = {}) {
       } else if (/\.(mp3|wav|m4a|aac|ogg)(?:[?#].*)?$/i.test(url)) {
         html += `<audio src="${esc(url)}" controls preload="metadata"></audio>`;
       } else {
-        html += `<img ${ChatImagePreview.attributes(url)} ${imageInteractionAttrs()}>`;
+        if (!images.length) html += '<!--chat-images-->';
+        images.push(`<img ${ChatImagePreview.attributes(url)} ${imageInteractionAttrs()}>`);
       }
     }
   });
   const musicBlock = musicHtml ? '<div class="music-cards-container">' + musicHtml + '</div>' : '';
   const wishBlock = wishHtml || '';
+  if (images.length) html = html.replace('<!--chat-images-->', ChatImagePreview.group(images));
   const mediaBlock = html ? '<div class="msg-media">' + html + '</div>' : '';
   return musicBlock + wishBlock + mediaBlock;
 }
@@ -6389,16 +6433,16 @@ function removeChatroomAttachment(i) {
   renderPreview();
 }
 
-function openImageViewer(src) {
-  const viewer = document.getElementById('imageViewer');
-  const viewerImg = document.getElementById('viewerImg');
-  viewerImg.src = src;
-  bindImageSaveOnly(document.getElementById('viewerImg'), closeImageViewer);
-  viewer.classList.add('active');
+function openImageViewer(src, img) {
+  const group = img?.closest('.chat-image-group');
+  const images = group ? [...group.querySelectorAll('img')] : [];
+  window.AionImageViewer.open(images.length ? images.map(ChatImagePreview.original) : [src], Math.max(0, images.indexOf(img)), {
+    onSave: saveImage, onLongPress: showImageSaveMenu,
+  });
 }
 
 function closeImageViewer() {
-  document.getElementById('imageViewer').classList.remove('active');
+  window.AionImageViewer.close();
 }
 
 // 文件选择绑定
@@ -6661,7 +6705,11 @@ let _crVoiceOverlay = null;
 let _crVoiceCancelled = false;
 let _crVoiceNativeChunks = [];
 let _crVoiceUseNative = false;
+let _crVoiceLocalSession = null;
+let _crVoiceFinishing = false;
+let _crVoiceTarget = null;
 let _crVoiceResumeAmbient = false;
+let _crVoiceResumeTimer = null;
 
 // 语音消息播放
 let _crVoiceAudio = null;
@@ -6710,9 +6758,9 @@ function _crInitVoiceHoldBtn() {
 
 async function _crVoiceStartRecord(evt) {
   if (!crRequireModels()) return;
-  if (_crVoiceRecording || isSending) return;
-  _crVoiceResumeAmbient = false;
-  if (crAmbientUseNative && crAmbientCanRun()) {
+  if (_crVoiceRecording || _crVoiceFinishing || isSending) return;
+  if (_crVoiceResumeTimer) { clearTimeout(_crVoiceResumeTimer); _crVoiceResumeTimer = null; }
+  if (crAmbientCanRun()) {
     _crVoiceResumeAmbient = true;
     crAmbientStop(false);
   }
@@ -6721,18 +6769,21 @@ async function _crVoiceStartRecord(evt) {
   _crVoiceChunks = [];
   _crVoiceNativeChunks = [];
   _crVoiceStartTime = Date.now();
+  _crVoiceTarget = currentRoom?.id;
 
   _crVoiceOverlay = document.createElement('div');
   _crVoiceOverlay.className = 'voice-record-overlay active';
   _crVoiceOverlay.innerHTML = `
     <div class="vr-bg"></div>
     <div class="vr-trash-zone" id="crVrTrash">🗑️</div>
+    <div class="vr-transcript" id="crVrTranscript" hidden></div>
     <div class="vr-timer" id="crVrTimer">0:00</div>
     <div class="vr-hint" id="crVrHint">↑ 上滑取消</div>
   `;
   document.body.appendChild(_crVoiceOverlay);
 
   _crVoiceTimerInterval = setInterval(() => {
+    if (_crVoiceTarget !== (currentRoom?.id)) { _crVoiceCleanup(); return; }
     const sec = Math.floor((Date.now() - _crVoiceStartTime) / 1000);
     const m = Math.floor(sec / 60), s = sec % 60;
     const timer = document.getElementById('crVrTimer');
@@ -6743,6 +6794,22 @@ async function _crVoiceStartRecord(evt) {
   btn.classList.add('recording'); btn.textContent = '松开 发送';
 
   _crVoiceUseNative = false;
+
+  if (window.AionLocalVoice?.enabled()) {
+    const subtitle = document.getElementById('crVrTranscript');
+    subtitle.hidden = false;
+    subtitle.textContent = '正在准备本地识别…';
+    try {
+      _crVoiceLocalSession = window.AionLocalVoice.start({
+        onText: text => { subtitle.textContent = text || '正在听…'; subtitle.scrollTop = subtitle.scrollHeight; },
+        onReady: () => { if (!subtitle.textContent || subtitle.textContent === '正在准备本地识别…') subtitle.textContent = '正在听…'; },
+        onError: message => { _crVoiceCleanup(); toast(message); },
+        onCancel: () => _crVoiceCleanup()
+      });
+    } catch (e) { _crVoiceCleanup(); toast(e.message || '本地识别启动失败'); }
+    return;
+  }
+
 
   // Android WebView：直接用原生录音桥（绕过 HTTPS 限制）
   // 注意：聊天室可能在 iframe 中加载，AionAudio 注入在顶层 WebView
@@ -6810,6 +6877,24 @@ async function _crVoiceStopRecord(evt) {
 
   if (_crVoiceCancelled || duration < 0.5) { _crVoiceCleanup(); return; }
 
+  if (_crVoiceLocalSession) {
+    const session = _crVoiceLocalSession;
+    const targetId = _crVoiceTarget;
+    _crVoiceFinishing = true;
+    if (_crVoiceTimerInterval) { clearInterval(_crVoiceTimerInterval); _crVoiceTimerInterval = null; }
+    const hint = document.getElementById('crVrHint');
+    if (hint) hint.textContent = '正在完成识别…';
+    try {
+      const result = await session.finish();
+      _crVoiceCleanup();
+      if (!result || targetId !== (currentRoom?.id) || document.hidden || window.AionLocalVoice?.isVisible?.() === false) return;
+      if (!result.text?.trim()) { toast('没有听清，请再说一次'); return; }
+      if (result.duration < 0.5) return;
+      await _crVoiceSend(window.AionLocalVoice.wavBlob(result.wav), result.duration, result.text.trim(), targetId);
+    } finally { _crVoiceFinishing = false; _crResumeAmbientAfterVoice(); }
+    return;
+  }
+
   let audioBlob;
   if (_crVoiceUseNative) {
     const _aa = _getNativeBridge('AionAudio');
@@ -6830,6 +6915,7 @@ async function _crVoiceStopRecord(evt) {
 }
 
 function _crVoiceCleanup() {
+  if (_crVoiceLocalSession) { _crVoiceLocalSession.cancel(); _crVoiceLocalSession = null; }
   if (_crVoiceTimerInterval) { clearInterval(_crVoiceTimerInterval); _crVoiceTimerInterval = null; }
   if (_crVoiceOverlay) { _crVoiceOverlay.remove(); _crVoiceOverlay = null; }
   if (_crVoiceStream) { _crVoiceStream.getTracks().forEach(t => t.stop()); _crVoiceStream = null; }
@@ -6838,10 +6924,18 @@ function _crVoiceCleanup() {
   _crVoiceRecording = false; _crVoiceChunks = []; _crVoiceNativeChunks = [];
   const btn = document.getElementById('crVoiceHoldBtn');
   if (btn) { btn.classList.remove('recording'); btn.textContent = '按住 说话'; }
-  if (_crVoiceResumeAmbient) {
+  _crResumeAmbientAfterVoice();
+}
+
+function _crResumeAmbientAfterVoice() {
+  if (_crVoiceResumeTimer) clearTimeout(_crVoiceResumeTimer);
+  if (!_crVoiceResumeAmbient) return;
+  _crVoiceResumeTimer = setTimeout(() => {
+    _crVoiceResumeTimer = null;
+    if (_crVoiceRecording || _crVoiceFinishing) return;
     _crVoiceResumeAmbient = false;
-    setTimeout(() => crAmbientSyncRunning(), 350);
-  }
+    crAmbientSyncRunning().catch(() => {});
+  }, 350);
 }
 
 function _crBuildWav(chunks) {
@@ -6863,7 +6957,7 @@ function _crBuildWav(chunks) {
   return new Blob([wav], { type: 'audio/wav' });
 }
 
-async function _crVoiceSend(audioBlob, duration) {
+async function _crVoiceSend(audioBlob, duration, localTranscript = null, targetId = currentRoom?.id) {
   if (!crRequireModels()) return;
   if (!currentRoom || isSending) return;
 
@@ -6881,8 +6975,8 @@ async function _crVoiceSend(audioBlob, duration) {
   // 2. 转写
   const fd2 = new FormData();
   fd2.append('file', audioBlob, `voice.${ext}`);
-  let transcript = '';
-  for (let _try = 0; _try < 2; _try++) {
+  let transcript = localTranscript == null ? '' : localTranscript;
+  for (let _try = 0; localTranscript == null && _try < 2; _try++) {
     try {
       const body = _try === 0 ? fd2 : (() => { const f = new FormData(); f.append('file', audioBlob, `voice.${ext}`); return f; })();
       const res = await fetch('/api/voice/transcribe', { method: 'POST', body });
@@ -6891,6 +6985,8 @@ async function _crVoiceSend(audioBlob, duration) {
       if (transcript) break;
     } catch (e) { console.warn(`[CR-Voice] Transcribe attempt ${_try+1} failed:`, e); }
   }
+
+  if (targetId !== (currentRoom?.id) || isSending || document.hidden || window.AionLocalVoice?.isVisible?.() === false) return;
 
   // 3. 构建语音附件并发送
   const voiceAtt = { type: 'voice', url: uploadRes.url, duration: Math.round(duration * 10) / 10, transcript };

@@ -23,7 +23,7 @@ from cancelled_reply import save_cancelled_replies
 from active_window_state import record_aion_private_active
 from ai_providers import stream_ai, CLI_STATUS_PREFIX, with_current_device_context, model_chat_idle_timeout
 from memory import recall_memories, instant_digest, fetch_source_details, build_surfacing_memories, get_embedding, _pack_embedding, format_recalled_memories_for_prompt
-from camera import cam, CAM_CHECK_CMD, perform_cam_check
+from camera import cam, CAM_CHECK_CMD, perform_cam_check, build_monitor_alert_data
 from activity import get_activity_summary_for_prompt, get_user_dynamics_for_prompt
 from message_dedup import build_message_dedupe_key, reserve_message_ingress
 from routes.files import export_conversation
@@ -164,7 +164,7 @@ def _process_voice_attachments_in_history(history: list, keep_idx: int = -1):
                 if transcript:
                     media_transcripts.append(f"[语音消息] {transcript}")
                 if is_kept:
-                    non_media_atts.append(att.get("url", ""))
+                    non_media_atts.append(att)  # Preserve voice type for WebM/MP4 audio containers.
             elif isinstance(att, dict) and att.get("type") == "video_clip":
                 transcript = att.get("transcript", "")
                 if transcript:
@@ -1438,14 +1438,11 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
     user_name = wb.get("user_name") or "用户"
     prefix = []
     if wb.get("ai_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix.append({"role": "system", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
     if wb.get("user_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
+        prefix.append({"role": "system", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
     if wb.get("system_prompt") and wb.get("system_prompt_enabled", True):
-        prefix.append({"role": "user", "content": f"[系统提示]\n{wb['system_prompt']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会遵循这些规则。"})
+        prefix.append({"role": "system", "content": f"[系统提示]\n{wb['system_prompt']}"})
     if prefix:
         history = prefix + history
 
@@ -1842,7 +1839,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 await manager.broadcast({"type": "pet_command", "data": {"action": pet_matches[-1].lower()}})
 
             if cam_triggered:
-                cam_data = {'type': 'cam_check', 'conv_id': conv_id, 'model_key': model_key, 'msg_id': ai_msg_id}
+                cam_data = build_monitor_alert_data('监控查看', type='cam_check', conv_id=conv_id, model_key=model_key, msg_id=ai_msg_id)
                 await _q.put(cam_data)
                 await manager.broadcast({"type": "cam_check", "data": cam_data})
                 spawn_generation_task(_delayed_cam_check(conv_id, model_key))
@@ -2059,14 +2056,11 @@ async def send_message(conv_id: str, body: MsgCreate):
     user_name = wb.get("user_name") or "用户"
     prefix = []
     if wb.get("ai_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix.append({"role": "system", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
     if wb.get("user_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
+        prefix.append({"role": "system", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
     if wb.get("system_prompt") and wb.get("system_prompt_enabled", True):
-        prefix.append({"role": "user", "content": f"[系统提示]\n{wb['system_prompt']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会遵循这些规则。"})
+        prefix.append({"role": "system", "content": f"[系统提示]\n{wb['system_prompt']}"})
     if prefix:
         history = prefix + history
 
@@ -2585,7 +2579,7 @@ async def send_message(conv_id: str, body: MsgCreate):
 
             # [CAM_CHECK] 服务端直接触发，前端只显示 UI 指示器
             if cam_triggered:
-                cam_data = {'type': 'cam_check', 'conv_id': conv_id, 'model_key': model_key, 'msg_id': ai_msg_id}
+                cam_data = build_monitor_alert_data('监控查看', type='cam_check', conv_id=conv_id, model_key=model_key, msg_id=ai_msg_id)
                 await _q.put(cam_data)
                 await manager.broadcast({"type": "cam_check", "data": cam_data})
                 spawn_generation_task(_delayed_cam_check(conv_id, model_key))
@@ -2698,11 +2692,11 @@ async def send_message(conv_id: str, body: MsgCreate):
 
 # ── 异步生图任务 ─────────────────────────────────
 async def _do_image_gen(conv_id: str, trigger_msg_id: str, prompt: str, is_selfie: bool):
-    """异步调用 Gemini 生图，成功后作为新 assistant 消息保存并广播"""
-    from image_gen import generate_image
+    """按出场人物附带共享锚点，成功后作为图片消息保存并广播。"""
+    from image_gen import generate_chat_image
 
     try:
-        filename = await generate_image(prompt, is_selfie=is_selfie)
+        filename = await generate_chat_image(prompt, is_selfie=is_selfie)
         if filename:
             # 生成成功 → 创建新的 assistant 消息（仅含图片）
             now = time.time()
@@ -2728,7 +2722,9 @@ async def _do_image_gen(conv_id: str, trigger_msg_id: str, prompt: str, is_selfi
             print("[image_gen] 生图失败，已通知前端")
     except Exception as e:
         print(f"[image_gen] 异步生图任务异常: {e}")
-        await manager.broadcast({"type": "image_gen_failed", "data": {"conv_id": conv_id, "trigger_msg_id": trigger_msg_id}})
+        error = ('图片生成超时，这次没有收到图片，请稍后再试' if isinstance(e, TimeoutError)
+                 else str(e) if isinstance(e, ValueError) else '图片生成失败，请稍后重试')
+        await manager.broadcast({"type": "image_gen_failed", "data": {"conv_id": conv_id, "trigger_msg_id": trigger_msg_id, "error": error}})
 
 
 # ── 服务端延迟触发监控查看（不再依赖前端 API 调用） ─────
@@ -3017,18 +3013,15 @@ async def perform_private_memory_search(
     messages: list[dict] = []
     if wb.get("ai_persona"):
         messages.extend([
-            {"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"},
-            {"role": "assistant", "content": "收到，我会按照设定扮演角色。"},
+            {"role": "system", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"},
         ])
     if wb.get("user_persona"):
         messages.extend([
-            {"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"},
-            {"role": "assistant", "content": "收到，我会记住你的信息。"},
+            {"role": "system", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"},
         ])
     if wb.get("system_prompt") and wb.get("system_prompt_enabled", True):
         messages.extend([
-            {"role": "user", "content": f"[系统提示]\n{wb['system_prompt']}"},
-            {"role": "assistant", "content": "收到，我会遵循这些规则。"},
+            {"role": "system", "content": f"[系统提示]\n{wb['system_prompt']}"},
         ])
     ability_block = await build_ability_block(
         user_name, model_key=model_key, excluded_capabilities={"memory_search"}, profile_query=original_question
@@ -3156,14 +3149,11 @@ async def perform_web_search_check(conv_id: str, model_key: str, searches: list[
 
     prefix = []
     if wb.get("ai_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix.append({"role": "system", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
     if wb.get("user_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
+        prefix.append({"role": "system", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
     if wb.get("system_prompt") and wb.get("system_prompt_enabled", True):
-        prefix.append({"role": "user", "content": f"[系统提示]\n{wb['system_prompt']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会遵循这些规则。"})
+        prefix.append({"role": "system", "content": f"[系统提示]\n{wb['system_prompt']}"})
 
     import aiosqlite
     async with get_db() as db:
@@ -3334,14 +3324,11 @@ async def perform_poi_check(conv_id: str, model_key: str, categories: list[str])
 
     prefix = []
     if wb.get("ai_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix.append({"role": "system", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
     if wb.get("user_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
+        prefix.append({"role": "system", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
     if wb.get("system_prompt") and wb.get("system_prompt_enabled", True):
-        prefix.append({"role": "user", "content": f"[系统提示]\n{wb['system_prompt']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会遵循这些规则。"})
+        prefix.append({"role": "system", "content": f"[系统提示]\n{wb['system_prompt']}"})
 
     # 获取最近对话上下文
     import aiosqlite
@@ -3478,14 +3465,11 @@ async def perform_activity_check(conv_id: str, model_key: str, n: int = 6):
 
     prefix = []
     if wb.get("ai_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix.append({"role": "system", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
     if wb.get("user_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
+        prefix.append({"role": "system", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
     if wb.get("system_prompt") and wb.get("system_prompt_enabled", True):
-        prefix.append({"role": "user", "content": f"[系统提示]\n{wb['system_prompt']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会遵循这些规则。"})
+        prefix.append({"role": "system", "content": f"[系统提示]\n{wb['system_prompt']}"})
 
     import aiosqlite
     async with get_db() as db:
@@ -3624,14 +3608,11 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
     user_name = wb.get("user_name") or "用户"
     prefix = []
     if wb.get("ai_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix.append({"role": "system", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
     if wb.get("user_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
+        prefix.append({"role": "system", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
     if wb.get("system_prompt") and wb.get("system_prompt_enabled", True):
-        prefix.append({"role": "user", "content": f"[系统提示]\n{wb['system_prompt']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会遵循这些规则。"})
+        prefix.append({"role": "system", "content": f"[系统提示]\n{wb['system_prompt']}"})
     if prefix:
         history = prefix + history
 
@@ -4049,7 +4030,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
 
             # [CAM_CHECK] 服务端直接触发，前端只显示 UI 指示器
             if cam_triggered:
-                cam_data = {'type': 'cam_check', 'conv_id': conv_id, 'model_key': model_key, 'msg_id': ai_msg_id}
+                cam_data = build_monitor_alert_data('监控查看', type='cam_check', conv_id=conv_id, model_key=model_key, msg_id=ai_msg_id)
                 await _q.put(cam_data)
                 await manager.broadcast({"type": "cam_check", "data": cam_data})
                 spawn_generation_task(_delayed_cam_check(conv_id, model_key))

@@ -25,7 +25,7 @@ function loadMessageRenderer() {
     functionBlock(source, 'function crMsgMenuHtml', 'function crCanRateAiMsg'),
     functionBlock(source, 'function crMsgSenderLineHtml', 'function crEnsureMsgMenu'),
     functionBlock(source, 'function crBubbleUnitHtml', 'function crRenderMessageItems'),
-    functionBlock(source, 'function msgHTML', 'let crMsgFeedbackPopover'),
+    functionBlock(source, 'function crPrivateWhisperNoteHtml', 'let crMsgFeedbackPopover'),
   ].join('\n');
 
   const context = {

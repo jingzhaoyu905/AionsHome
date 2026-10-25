@@ -74,6 +74,19 @@ test('failure keeps received text and reason, suppresses failed audio, and permi
   assert.equal(ctx.textarea.focused, true);
 });
 
+test('a whisper-only completion appears without public streaming chunks and is not duplicated', () => {
+  const ctx = harness();
+  ctx.rows.length = 0;
+  ctx.streamingBubble = null;
+  ctx.streamingText = '';
+  const message = { id: 'whisper-only', sender: 'aion', content: '', attachments: [{ type: 'private_whisper_sent', count: 1 }] };
+  ctx.endStreamingBubble(message);
+  assert.equal(ctx.rows.length, 1);
+  assert.equal(ctx.rows[0], message);
+  ctx.endStreamingBubble(message);
+  assert.equal(ctx.rows.length, 1);
+});
+
 test('failed AI message retains regenerate/delete actions without voice replay', () => {
   const ctx = harness();
   Object.assign(ctx, { crMsgFeedbackHtml: () => '', esc: String });

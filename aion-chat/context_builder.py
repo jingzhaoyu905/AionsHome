@@ -997,7 +997,8 @@ def render_merged_timeline(
             content = pending_scene_marker + content
             pending_scene_marker = ""
 
-        entry = {"role": role, "content": content}
+        # API roles are all user here; retain the real speaker for attachment lifetime.
+        entry = {"role": role, "content": content, "_timeline_sender": msg["sender"]}
 
         # ── 附件：普通对话保留最近两轮用户图片；后台唤醒可完全关闭历史图片 ──
         attachments = []

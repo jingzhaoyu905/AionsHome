@@ -5,6 +5,7 @@ import re
 import time
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -227,21 +228,27 @@ class Anchor(BaseModel):
     aliases: str = ''
     appearance: str = ''
     image: str = ''
+    identity: Literal['', 'user', 'aion', 'connor'] | None = None
 
 
 def reference_path(url):
-    if not url.startswith('/uploads/'):
-        raise HTTPException(400, '请上传人物照片')
-    root = Path(UPLOADS_DIR).resolve()
-    path = (root / url.removeprefix('/uploads/')).resolve()
-    if not path.is_relative_to(root) or not path.is_file() or path.suffix.lower() not in ('.jpg', '.jpeg', '.png', '.webp'):
-        raise HTTPException(400, '人物照片无效')
-    return path
+    from image_anchors import reference_path as shared_reference_path
+    try:
+        return shared_reference_path(url, UPLOADS_DIR)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get('/anchors')
 async def get_anchors():
-    return await rows(kind='anchor')
+    from image_anchors import load_anchors
+    return await load_anchors(db_factory=get_db)
+
+
+@router.get('/anchor-identities')
+async def get_anchor_identities():
+    from image_anchors import identity_names
+    return identity_names()
 
 
 @router.put('/anchors/{aid}')
@@ -250,7 +257,11 @@ async def put_anchor(aid: str, body: Anchor):
         reference_path(body.image)
     if not re.fullmatch(r'[\w-]{1,80}', aid):
         raise HTTPException(400, '无效角色编号')
-    return await save(dict(id='anchor_'+aid, kind='anchor', conv_id='', **body.model_dump()))
+    existing = await load('anchor_'+aid) or {}
+    values = body.model_dump(exclude_none=True)
+    if body.identity is None:
+        values['identity'] = existing.get('identity', '')
+    return await save(dict(id='anchor_'+aid, kind='anchor', conv_id='', **values))
 
 
 class ModelRequestError(RuntimeError):

@@ -1,5 +1,8 @@
 import asyncio
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +19,24 @@ def make_image(path):
 
 
 class AntigravityProfileTests(unittest.TestCase):
+    def test_image_hook_reads_utf8_events_even_with_windows_gbk_stdin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = str(Path(directory) / '图片.png')
+            manifest = Path(directory) / 'allowed.json'
+            manifest.write_text(json.dumps([image], ensure_ascii=False), encoding='utf-8')
+            for path, expected in ((image, 'allow'), (str(Path(directory) / 'other.png'), 'deny')):
+                event = {'toolCall': {'name': 'view_file', 'args': {'AbsolutePath': path}},
+                         'lastUserInput': '请查看这张图片🌙'}
+                result = subprocess.run(
+                    [sys.executable, str(Path(antigravity_image_hook.__file__)), str(manifest)],
+                    input=json.dumps(event, ensure_ascii=False).encode('utf-8'),
+                    capture_output=True, timeout=10,
+                    env={**os.environ, 'PYTHONIOENCODING': 'gbk', 'PYTHONUTF8': '0'},
+                )
+                with self.subTest(expected=expected):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(result.stdout)['decision'], expected)
+
     def test_staging_recovers_cmyk_jpeg_as_readable_rgb_png(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'upload.jpg'
@@ -324,7 +345,19 @@ class AntigravityStreamTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('AGY · Gemini 3.1 Pro (High)', config.MODELS)
             self.assertTrue(config.MODELS[key]['vision'])
             self.assertTrue(all(value['vision'] for value in config.ANTIGRAVITY_MODELS.values()))
-            self.assertFalse(config.MODELS[key]['audio'])
+            self.assertTrue(config.MODELS[key]['audio'])
+            self.assertFalse(config.MODELS['AGY · Claude Opus 5.5 (Medium)']['audio'])
+            with tempfile.TemporaryDirectory() as directory, patch.object(
+                config, 'ANTIGRAVITY_MODELS_PATH', Path(directory) / 'old-cache.json'
+            ):
+                config.ANTIGRAVITY_MODELS_PATH.write_text(json.dumps({
+                    key: {**config.MODELS[key], 'audio': False},
+                    'AGY · Claude Opus 5.5 (Medium)': {
+                        'provider': 'antigravity_cli', 'model': 'claude-opus-5-5-medium', 'audio': True},
+                }), encoding='utf-8')
+                restored = config._read_antigravity_models()
+                self.assertTrue(restored[key]['audio'])
+                self.assertFalse(restored['AGY · Claude Opus 5.5 (Medium)']['audio'])
             self.assertTrue(config.is_model_deprecated('AGY-3.1pro'))
         finally:
             if hasattr(config, 'replace_antigravity_models'):
@@ -403,6 +436,95 @@ class AntigravityStreamTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(staged.exists())
             self.assertFalse((workspace / '.agents/image-input.json').exists())
             self.assertTrue(source.exists())
+
+    async def test_voice_files_reach_only_gemini_with_message_association(self):
+        import ai_providers
+
+        with tempfile.TemporaryDirectory() as directory:
+            audio = Path(directory) / 'voice.wav'
+            audio.write_bytes(b'RIFF-test-audio')
+            for model, expected in [('gemini-3.8-flash-high', (str(audio.resolve()),)),
+                                    ('claude-opus-5-5-medium', ())]:
+                async def stream(*args, **kwargs):
+                    self.assertEqual(kwargs.get('audio_paths', ()), expected)
+                    self.assertNotIn('@' + str(audio).replace('\\', '/'), args[1])
+                    self.assertIn('转写内容', args[1])
+                    if expected:
+                        self.assertIn('语音附件：音频1', args[1])
+                        self.assertIn('再听一次\n（语音附件：音频1）', args[1])
+                    yield {'kind': 'text', 'text': '收到'}
+
+                with self.subTest(model=model), patch.object(ai_providers, 'UPLOADS_DIR', Path(directory)), patch.object(
+                    ai_providers, '_find_antigravity_binary', return_value='agy.exe'
+                ), patch.object(agy, 'stream_chat', stream):
+                    chunks = [chunk async for chunk in ai_providers.call_antigravity_cli([
+                        {'role': 'user', 'content': '转写内容', 'attachments': [
+                            {'type': 'voice', 'url': '/uploads/voice.wav', 'transcript': '转写内容'}]},
+                        {'role': 'user', 'content': '再听一次', 'attachments': '["/uploads/voice.wav"]'},
+                    ], model)]
+                    self.assertIn('收到', chunks)
+
+    async def test_audio_and_image_share_exact_read_allowlist_and_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / 'workspace'
+            source = Path(directory) / 'voice.wav'
+            source.write_bytes(b'RIFF-test-audio')
+            photo = Path(directory) / 'photo.png'
+            make_image(photo)
+            staged_paths = []
+
+            async def spawn(*command, **kwargs):
+                paths = json.loads((workspace / '.agents/image-input.json').read_text(encoding='utf-8'))
+                self.assertEqual(len(paths), 2)
+                staged_paths.extend(map(Path, paths))
+                audio = next(path for path in staged_paths if path.suffix == '.wav')
+                self.assertEqual(audio.read_bytes(), source.read_bytes())
+                for path, expected in [(str(audio), 'allow'), (str(source), 'deny')]:
+                    call = {'toolCall': {'name': 'view_file', 'args': {'AbsolutePath': path}}}
+                    self.assertEqual(antigravity_image_hook.image_permission_decision(call, paths)['decision'], expected)
+                return FakeProcess([
+                    {'event': 'init', 'init': {'agent': agy.VISION_AGENT_NAME}},
+                    {'event': 'step_update', 'step_update': {'step_type': 'tool', 'tool_name': 'view_file',
+                        'tool_info': {'parameters': {'AbsolutePath': str(audio)}, 'output': 'audio'}}},
+                    {'event': 'result', 'result': {'status': 'SUCCESS', 'response': '听到了'}},
+                ])
+
+            with patch.object(agy.asyncio, 'create_subprocess_exec', spawn):
+                events = [event async for event in agy.stream_chat(
+                    'agy.exe', '听音看图', 'gemini-3.8-flash-high', workspace,
+                    image_paths=(str(photo),), audio_paths=(str(source),))]
+            self.assertEqual(events[-2]['text'], '听到了')
+            self.assertTrue(all(not path.exists() for path in staged_paths))
+            self.assertFalse((workspace / '.agents/image-input.json').exists())
+            self.assertTrue(source.exists())
+
+    async def test_browser_voice_survives_history_and_model_dispatch(self):
+        import ai_providers
+        from routes.chat import _process_voice_attachments_in_history
+        from routes.chatroom import _process_voice_attachments
+
+        with tempfile.TemporaryDirectory() as directory:
+            audio = Path(directory) / 'voice.webm'
+            audio.write_bytes(b'webm-audio')
+            for processor in (_process_voice_attachments_in_history, _process_voice_attachments):
+                for model, enabled in [('gemini-3.8-flash-high', True), ('claude-opus-5-5-medium', False)]:
+                    history = [{'role': 'user', 'content': '', 'attachments': [
+                        {'type': 'voice', 'url': '/uploads/voice.webm', 'transcript': '浏览器录音'}]}]
+                    processor(history)
+
+                    async def stream(*args, **kwargs):
+                        self.assertEqual(kwargs['audio_paths'], (str(audio.resolve()),) if enabled else ())
+                        self.assertIn('浏览器录音', args[1])
+                        yield {'kind': 'text', 'text': '收到'}
+
+                    with self.subTest(processor=processor.__name__, model=model), patch.dict(ai_providers.MODELS, {
+                        'audio-test': {'provider': 'antigravity_cli', 'model': model, 'audio': enabled}
+                    }), patch.object(ai_providers, 'UPLOADS_DIR', Path(directory)), patch.object(
+                        ai_providers, '_find_antigravity_binary', return_value='agy.exe'
+                    ), patch.object(agy, 'stream_chat', stream):
+                        chunks = [chunk async for chunk in ai_providers.stream_ai(
+                            history, 'audio-test', include_device_context=False)]
+                        self.assertIn('收到', chunks)
 
     async def test_vision_model_moments_keep_images_for_native_reading(self):
         import config

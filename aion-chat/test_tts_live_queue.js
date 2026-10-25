@@ -4,6 +4,39 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
+test('remote TTS off stops queued speech and updates playback presence', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'static/chatroom.js'), 'utf8');
+  const start = source.indexOf('function crApplySettingsSync(');
+  const calls = [];
+  const context = vm.createContext({
+    crTtsEnabled: true, crTtsAionVoice: 'a', crTtsConnorVoice: 'c',
+    crTtsAcceptAfter: 0, crTtsPlaybackActiveAt: 0,
+    chatroomModel: 'a', chatroomConnorModel: 'c', chatroomReplyOrder: 'random', currentRoom: null,
+    applyChatroomNames() {}, crApplyAmbientVoiceConfig() {}, updateHeaderActions() {}, renderRoomList() {},
+    document: {getElementById: () => ({classList: {contains: () => false}})},
+    crStopTTS: () => calls.push('stop'), crSendTTSState: () => calls.push('sync'),
+  });
+  vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
+  context.crApplySettingsSync({config: {tts_enabled: false}});
+  assert.equal(context.crTtsEnabled, false);
+  assert.deepEqual(calls, ['stop', 'sync']);
+  assert.ok(context.crTtsAcceptAfter > 0, 'old buffered chunks must be rejected');
+});
+
+test('background Android pages yield new speech to the native service', () => {
+  for (const [file, name] of [['chat.js', 'isTTSPlaybackAllowed'], ['chatroom.js', 'crTtsPlaybackAllowed']]) {
+    const source = fs.readFileSync(path.join(__dirname, 'static', file), 'utf8');
+    const start = source.indexOf(`function ${name}(`);
+    const context = vm.createContext({window: {AionTtsAudio: {isForeground: () => false}}});
+    vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
+    assert.equal(context[name](), false, file);
+    context.window.AionTtsAudio.isForeground = () => true;
+    assert.equal(context[name](), true);
+    context.window = {};
+    assert.equal(context[name](), true, 'browser playback stays available');
+  }
+});
+
 test('private and room messages retain speech ownership across synthesis gaps', async () => {
   for (const room of [false, true]) {
     const events = [];

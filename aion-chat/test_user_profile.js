@@ -29,7 +29,8 @@ test('profile groups sort by update time and collapse ended entries without chan
   assert.ok(html.indexOf('待办与安排') < html.indexOf('近期偏好')); 
   assert.ok(html.indexOf('新偏好') < html.indexOf('旧偏好'));
   assert.match(html, /data-index="2"[^>]*>[\s\S]*?新偏好/);
-  assert.match(html, /<details[^>]*><summary>已结束与归档（1）<\/summary>[\s\S]*?结束事项/);
+  assert.match(html, /<section class="profile-current"[\s\S]*?当前带入 AI[\s\S]*?未完成事项[\s\S]*?<\/section>\s*<details/);
+  assert.match(html, /<details[^>]*>[\s\S]*?已结束与归档[\s\S]*?1 项[\s\S]*?不再带入 AI[\s\S]*?<\/summary>[\s\S]*?结束事项/);
   assert.doesNotMatch(html, /<details[^>]*\bopen\b/);
   assert.ok(html.indexOf('未完成事项') < html.indexOf('<details'));
 });

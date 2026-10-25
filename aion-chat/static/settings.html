@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>设置</title>
 <link rel="stylesheet" href="/static/common.css">
+<link rel="stylesheet" href="/static/image-anchors.css?v=20261022">
 <link rel="manifest" href="/manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#ff8359">
@@ -703,7 +704,7 @@ body[data-theme="light"] .transport-mode-btn.is-active {
       <summary>
         <div class="summary-title">
           <strong>🎨 生图模型</strong>
-          <span>聊天自拍与小剧场插画共用，保留各自人物参考照</span>
+          <span>私聊、群聊与小剧场共用人物锚点</span>
         </div>
         <span class="summary-chevron">›</span>
       </summary>
@@ -715,7 +716,9 @@ body[data-theme="light"] .transport-mode-btn.is-active {
             <option value="codex">Codex 登录额度</option>
           </select>
         </div>
-        <p class="hint" id="imageGenCodexHint" hidden>使用本机 Codex 已登录账号的额度，无需填写生图 Key。自拍与小剧场插画继续使用各自参考照；生成失败时不会自动切换到 API 接口。</p>
+        <p class="hint" id="imageGenCodexHint" hidden>使用本机 Codex 已登录账号的额度，无需填写生图 Key。按出场人物附带锚点照片；生成失败时不会自动切换到 API 接口。</p>
+        <div class="field"><button type="button" class="action-btn" onclick="ImageAnchors.open()">管理人物锚点</button></div>
+        <p class="hint">与小剧场共用同一份人物资料，单人照和合照自动带上出场人物的照片。人物修改在弹窗内单独保存。</p>
         <div id="imageGenApiConfig">
         <p class="hint">三项全部留空时，继续使用原来的 Gemini 生图模型和上方 Gemini API Key。填写完整并保存后，使用自定义接口；清空三项即可恢复默认。</p>
         <div class="settings-grid">
@@ -741,14 +744,25 @@ body[data-theme="light"] .transport-mode-btn.is-active {
       <summary>
         <div class="summary-title">
           <strong>🎙 语音转文字</strong>
-          <span>语音消息、手机通话与本机语音唤醒共用</span>
+          <span>本机聊天识别与云端转写配置</span>
         </div>
         <span class="summary-chevron">›</span>
       </summary>
       <div class="card-body">
         <div class="settings-grid">
           <div class="field full">
-            <label class="form-label" for="asrProviderInput">接口类型</label>
+            <label class="form-label" for="localAsrModeInput">本机聊天语音识别</label>
+            <select class="form-input" id="localAsrModeInput" onchange="window.AionLocalVoice.setMode(this.value); updateLocalAsrModeUi()">
+              <option value="local">手机本地 · 中英流式识别</option>
+              <option value="cloud">云端识别 · 使用下方配置</option>
+            </select>
+            <p class="hint" id="localAsrHint">仅这台手机的主聊天和聊天室生效，选择后立即保存。本地识别支持中英文，中英混杂较弱；发送仍上传语音附件供回听。</p>
+          </div>
+        </div>
+        <div id="cloudAsrFields" hidden>
+        <div class="settings-grid">
+          <div class="field full">
+            <label class="form-label" for="asrProviderInput">云端接口类型（通话、唤醒及云端语音消息）</label>
             <select class="form-input" id="asrProviderInput" onchange="updateAsrProviderUi(true)">
               <option value="openai">OpenAI 兼容</option>
               <option value="dashscope">阿里云 Paraformer</option>
@@ -769,6 +783,7 @@ body[data-theme="light"] .transport-mode-btn.is-active {
         </div>
         <p class="hint" id="asrProviderHint"></p>
         <p class="hint">填写后点击上方“保存全部设置”，从下一次转写生效。</p>
+        </div>
       </div>
     </details>
 
@@ -937,9 +952,22 @@ body[data-theme="light"] .transport-mode-btn.is-active {
 </div>
 <script src="/static/theme.js?v=theme-20260606"></script>
 <script src="/static/common.js"></script>
+<script src="/static/local-voice.js?v=20261024"></script>
+<script src="/static/image-anchors.js?v=20261022"></script>
 <script src="/static/tts-loudness-settings.js"></script>
 <script>
 connectCommonWS();
+
+const localAsrSelect = document.getElementById('localAsrModeInput');
+localAsrSelect.value = window.AionLocalVoice.mode();
+function updateLocalAsrModeUi() {
+  document.getElementById('cloudAsrFields').hidden = localAsrSelect.value !== 'cloud';
+}
+updateLocalAsrModeUi();
+if (!window.AionLocalVoice.available()) {
+  localAsrSelect.disabled = true;
+  document.getElementById('localAsrHint').textContent = '当前客户端未提供本地识别，聊天语音使用下方云端配置。请在新版 Android 小家中使用本地识别。';
+}
 
 var customModelRoutes = [];
 

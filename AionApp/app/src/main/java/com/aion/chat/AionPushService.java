@@ -139,7 +139,7 @@ public class AionPushService extends Service {
     public static final String EXTRA_PHONE_CAMERA_ZOOM = "phone_camera_zoom";
     private static final String PREFS = "aion_prefs";
     private static final String PREF_SAVED_URL = "saved_url";
-    private static final String DEFAULT_PAGE_URL = "http://192.168.1.100:8080/chat";
+    private static final String DEFAULT_PAGE_URL = "http://192.168.1.92:8080/chat";
     private static final String RING_PREFS_NAME = "aion_ring_ble";
     private static final String KEY_RING_ENABLED = "ring_enabled";
 
@@ -2610,14 +2610,21 @@ public class AionPushService extends Service {
                     String c = data != null ? data.optString("content", "监控提醒") : "监控提醒";
                     boolean nativePhoneCapture = data != null
                             && data.optBoolean("phone_camera_native_capture", false);
-                    showNotif(CH_ALARM, "👁 监控", c, true, nativePhoneCapture);
                     if (!nativePhoneCapture) {
+                        Log.i(TAG, "monitor cue source=monitor_alert foreground=" + isForegroundActive);
+                        startPhoneCameraAlert();
                         schedulePhoneScreenCapture("monitor_alert");
                     }
+                    // The service plays the cue directly, independently of notification settings.
+                    showNotif(CH_ALARM, "👁 监控", c, true, true);
                     break;
                 }
                 case "cam_check": {
-                    schedulePhoneScreenCapture("cam_check");
+                    if (data == null || !data.optBoolean("phone_camera_native_capture", false)) {
+                        Log.i(TAG, "monitor cue source=cam_check foreground=" + isForegroundActive);
+                        startPhoneCameraAlert();
+                        schedulePhoneScreenCapture("cam_check");
+                    }
                     break;
                 }
                 case "floating_screen_capture": {

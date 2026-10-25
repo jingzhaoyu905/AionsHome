@@ -340,7 +340,7 @@ function renderSettlement() {
   const walletLines = settle.wallet?.lines?.length ? ` 钱包：${settle.wallet.lines.join("；")}。` : "";
   modal.hidden = false;
   $("settlementTitle").textContent = `${settle.winnerName} 赢了`;
-  $("settlementMeta").textContent = `地主：${settle.landlordName}。${loserText || "没有剩牌。"}。${walletLines}`;
+  $("settlementMeta").textContent = `地主：${settle.landlordName}。${loserText || "没有剩牌。"}。炸弹（含王炸）${settle.bombCount || 0} 次，本局 ${settle.multiplier || 1} 倍。${walletLines}`;
 }
 
 function maybePlayStateFx(previous, nextState) {
@@ -375,7 +375,7 @@ function render() {
   if (!gameState) return;
   document.body.dataset.phase = gameState.phase;
   clearSelectionMissingFromHand();
-  $("phaseText").textContent = phaseNames[gameState.phase] || "牌局中";
+  $("phaseText").textContent = `${phaseNames[gameState.phase] || "牌局中"} · 赌注 ×${gameState.multiplier || 1}`;
   $("turnHint").textContent = gameState.phase === "preview"
     ? "确认后由你先叫地主。"
     : gameState.phase === "game_over"

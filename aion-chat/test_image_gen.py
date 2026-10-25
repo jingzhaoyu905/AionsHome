@@ -3,7 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 ROOT = Path(__file__).resolve().parent
@@ -159,7 +159,7 @@ class ChatroomImageGenerationTests(unittest.IsolatedAsyncioTestCase):
     async def test_chatroom_image_gen_forwards_internal_sender_identity(self):
         calls = []
 
-        async def fake_generate_image(prompt, is_selfie=False, source_identity=""):
+        async def fake_generate_image(prompt, is_selfie=False, source_identity="", *, raise_errors=False):
             calls.append({
                 "prompt": prompt,
                 "is_selfie": is_selfie,
@@ -167,7 +167,8 @@ class ChatroomImageGenerationTests(unittest.IsolatedAsyncioTestCase):
             })
             return None
 
-        with patch("image_gen.generate_image", new=fake_generate_image):
+        with patch("image_gen.generate_image", new=fake_generate_image), \
+                patch.object(chatroom_routes, '_save_msg', new=AsyncMock()):
             await chatroom_routes._chatroom_image_gen(
                 "room-1",
                 "connor",

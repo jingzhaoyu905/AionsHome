@@ -23,6 +23,7 @@ from user_profile_policy import STATE_MAX_CHARS
 
 log = logging.getLogger(__name__)
 KEY_RE = re.compile(r'^[a-zA-Z0-9_.-]{1,100}$')
+BUDGET_ERROR = '近期清单超过约2000 tokens或24项，请先合并同一事项、精简正文；未完成待办不能省略'
 _worker: asyncio.Task | None = None
 _enqueue_tasks: set[asyncio.Task] = set()
 _wake: asyncio.Event | None = None
@@ -112,7 +113,21 @@ async def snapshot(*, query=''):
         digest_pending = (await (await db.execute("SELECT count(*) FROM post_sentinel_digest_jobs WHERE status='pending'")).fetchone())[0]
         digest_error = await (await db.execute("SELECT error FROM post_sentinel_digest_jobs WHERE error!='' AND status='pending' ORDER BY created_at DESC LIMIT 1")).fetchone()
     now = time.time()
-    context, included = render_context(document, _profile_user_name(), now, query=query) if enabled() else ('', set())
+    context, included = render_context(document, _profile_user_name(), now, query=query)
+    within_budget = len(included) <= MAX_ENTRIES and estimate_tokens(context) <= PROMPT_LIMIT
+
+    def visible_error(error):
+        # Keep retry diagnostics intact; only hide an obsolete instruction to delete content.
+        if within_budget:
+            error = re.sub(r'(?:画像：|状态：|ValueError：)?' + re.escape(BUDGET_ERROR), '', error)
+        return '；'.join(part for part in error.split('；') if part)
+
+    last_error = '；'.join(filter(None, (
+        visible_error(errors[0] if errors else row['last_error']),
+        visible_error(digest_error[0] if digest_error else ''),
+    )))
+    if not enabled():
+        context, included = '', set()
     entries = [{**normalize(v), 'view_status': lifecycle(v, now), 'included': v['key'] in included,
                 'omission_reason': '' if v['key'] in included else '总开关已关闭' if not enabled() else '已结束或已淡出'}
                for v in document['entries'].values() if not v.get('deleted')]
@@ -120,7 +135,7 @@ async def snapshot(*, query=''):
         'version': 5, 'revision': row['revision'], 'entries': entries,
         'current_state': document.get('current_state'), 'enabled': enabled(),
         'updated_at': row['updated_at'], 'last_checked_at': row['last_checked_at'],
-        'last_error': '；'.join(filter(None, (errors[0] if errors else row['last_error'], digest_error[0] if digest_error else ''))),
+        'last_error': last_error,
         'pending': pending, 'failed': failed, 'digest_pending': digest_pending,
         'last_digest_at': document.get('last_digest_at'), 'needs_initialization': document.get('needs_initialization', False),
         'initialization': {k: v for k, v in document.get('initialization', {}).items() if k != 'source_ids'},
@@ -149,7 +164,7 @@ def _check_budget(document):
     entries = [v for v in document['entries'].values() if lifecycle(v, time.time()) not in ('done', 'cancelled', 'retired')]
     context, _ = render_context(document, _profile_user_name())
     if len(entries) > MAX_ENTRIES or estimate_tokens(context) > PROMPT_LIMIT:
-        raise ValueError('近期清单超过约2000 tokens或24项，请先合并同一事项、精简正文；未完成待办不能省略')
+        raise ValueError(BUDGET_ERROR)
 
 
 async def save_manual(payload: dict, revision: int):

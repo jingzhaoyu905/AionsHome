@@ -5,7 +5,7 @@
   const params = new URLSearchParams(location.search);
   const names = {main:'主AI', chatroom:'第二AI'};
   const state = {store:params.get('store') === 'chatroom' || params.get('store') === 'second' ? 'chatroom' : 'main',
-    view:'memories', filter:params.get('kind') === 'friend' ? 'friend' : 'all', page:1, limit:20, total:0, items:[], selected:null, detail:null,
+    view:params.get('view') === 'unresolved' ? 'unresolved' : 'memories', filter:['friend','unresolved'].includes(params.get('kind')) ? params.get('kind') : 'all', page:1, limit:20, total:0, items:[], selected:null, detail:null,
     pane:'source', sources:[], sourcePage:0, sourceTotal:0, sourceExact:true, sourceMore:false};
   let listRequest = 0, detailRequest = 0, sourceRequest = 0, dialogRequest = 0, searchTimer, dialogBusy = false, refreshPending = false;
   let initialDraft = null;
@@ -24,8 +24,8 @@
   function renderControls() {
     document.querySelectorAll('[data-store]').forEach(b => b.setAttribute('aria-pressed', b.dataset.store === state.store));
     document.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-selected', b.dataset.view === state.view));
-    el('viewHelp').textContent = state.view === 'atoms' ? '活跃与归档原文' : '当前参与召回';
-    const filters = state.view === 'atoms' ? [['all','全部'],['active','活跃'],['cold','已归档']] : [['all','全部'],['daily','日常'],['long_term','长期重要'],['friend','朋友记忆']];
+    el('viewHelp').textContent = state.view === 'atoms' ? '活跃与归档原文' : state.view === 'unresolved' || state.filter === 'unresolved' ? '含已归档的未完成记忆' : '当前参与召回';
+    const filters = state.view === 'atoms' ? [['all','全部'],['active','活跃'],['cold','已归档']] : [['all','全部'],['daily','日常'],['long_term','长期重要'],['friend','朋友记忆'],...(state.view === 'memories' ? [['unresolved','当前未完成']] : [])];
     el('chips').innerHTML = filters.map(([id,label]) => `<button class="chip" data-filter="${id}" aria-pressed="${state.filter === id}">${label}</button>`).join('');
   }
   function renderList() {
@@ -37,7 +37,7 @@
     el('prev').disabled = state.page <= 1;
     el('next').disabled = state.page >= pages;
     el('list').innerHTML = state.items.length ? state.items.map(m => `<article class="entry ${m.id === state.selected ? 'selected' : ''}" data-id="${esc(m.id)}">
-      <button class="entry-open"><div class="entry-head"><time>${esc(day(m.source_start_ts || m.created_at).replaceAll('-','.'))}</time><span class="pill ${m.memory_kind === 'daily' ? 'green' : ''}">${kindLabel(m)}</span><span class="end">${m.unresolved ? '待跟进 · ' : ''}${state.view === 'atoms' ? (m.archive_state === 'cold' ? '<span class="pill gray">已归档</span>' : '<i class="dot"></i>活跃') : periodLabel(m)}</span></div><p class="bodytext">${esc(m.content)}</p></button>
+      <button class="entry-open"><div class="entry-head"><time>${esc(day(m.source_start_ts || m.created_at).replaceAll('-','.'))}</time><span class="pill ${m.memory_kind === 'daily' ? 'green' : ''}">${kindLabel(m)}</span><span class="end">${m.unresolved ? '未完成 · ' : ''}${state.view === 'atoms' ? (m.archive_state === 'cold' ? '<span class="pill gray">已归档</span>' : '<i class="dot"></i>活跃') : periodLabel(m)}</span></div><p class="bodytext">${esc(m.content)}</p></button>
       <div class="entry-foot"><span class="entry-keywords" title="${esc(keywords(m.keywords))}">${esc(keywords(m.keywords) || '无关键词')}</span><div class="entry-actions"><button data-action="source">原文</button><button data-action="edit">编辑</button><button class="danger" data-action="delete">删除</button></div></div></article>`).join('') : '<div class="empty">没有找到匹配的记忆<br><small>试试其他关键词，或新增一条记忆</small></div>';
   }
   function refreshBlocked() {
@@ -146,7 +146,7 @@
   function renderDetail() {
     const {item:m, related, originals} = state.detail;
     el('detailBody').innerHTML = `<div class="eyebrow">${esc(names[state.store])} · ${m.is_atom ? '原子记忆' : periodLabel(m)}</div><p class="detail-text">${esc(m.content)}</p>
-      <div class="kv"><div><label>发生时间</label>${esc(m.memory_time_label || stamp(m.source_start_ts || m.created_at))}</div><div><label>状态</label>${m.archive_state === 'cold' ? '已归档 · 保留来源' : '活跃 · 参与召回'}</div><div><label>分类</label>${kindLabel(m)}${m.unresolved ? ' · 待跟进' : ''}</div><div><label>关键词</label>${esc(keywords(m.keywords) || '无')}</div></div>
+      <div class="kv"><div><label>发生时间</label>${esc(m.memory_time_label || stamp(m.source_start_ts || m.created_at))}</div><div><label>状态</label>${m.archive_state === 'cold' ? '已归档 · 保留来源' : '活跃 · 参与召回'}</div><div><label>分类</label>${kindLabel(m)}${m.unresolved ? ' · 当前未完成' : ''}</div><div><label>关键词</label>${esc(keywords(m.keywords) || '无')}</div></div>
       <div class="detail-tabs"><button data-pane="source" class="${state.pane === 'source' ? 'active' : ''}">聊天原文</button><button data-pane="related" class="${state.pane === 'related' ? 'active' : ''}">关联记忆${related.length + originals.length ? ` · ${related.length + originals.length}` : ''}</button></div><div id="detailPane"></div>`;
     if (state.pane === 'related') {
       const links = (rows, title) => rows.length ? `<p class="note">${title}</p>` + rows.map(r => `<button class="related" data-related="${esc(r.id)}"><small>${r.lineage_exact ? '' : '同批次候选 · '}${kindLabel(r)} · ${esc(day(r.source_start_ts || r.created_at))}${r.archive_state === 'cold' ? ' · 已归档' : ''}</small>${esc(r.content)}</button>`).join('') : '';
@@ -236,7 +236,8 @@
       const originalDay = m ? day(m.source_start_ts || m.created_at) : day();
       modal(id ? '编辑记忆' : '新增记忆', `<label class="field">内容<textarea id="editText" maxlength="30000" placeholder="记录一件值得记住的事…">${esc(m?.content || '')}</textarea></label>
         <div class="form-grid"><label class="field">发生日期<input id="editDate" type="date" value="${originalDay}"></label><label class="field">分类<select id="editKind"><option value="daily">日常</option><option value="long_term" ${!m || m.memory_kind === 'long_term' ? 'selected' : ''}>长期重要</option><option value="friend" ${m?.memory_kind === 'friend' ? 'selected' : ''}>朋友记忆</option></select></label></div>
-        <label class="field">关键词<input id="editTags" maxlength="2000" value="${esc(keywords(m?.keywords).replaceAll(' · ', '，'))}" placeholder="用逗号分开"></label><details><summary class="note">更多设置</summary><div class="form-grid"><label class="field">重要程度<input id="editImportance" type="number" min="0" max="1" step="0.05" value="${m?.importance ?? .5}"></label><label class="field inline"><input id="editUnresolved" type="checkbox" ${m?.unresolved ? 'checked' : ''}>待跟进</label></div><label class="field">补充线索<input id="editEvidence" value="${esc(m?.evidence_summary || '')}"></label></details>${relationNote(result.related)}`, cancelSave);
+        <label class="field inline"><input id="editUnresolved" type="checkbox" ${(m ? m.unresolved : state.view === 'unresolved' || state.filter === 'unresolved') ? 'checked' : ''}>当前未完成（完成后取消勾选）</label>
+        <label class="field">关键词<input id="editTags" maxlength="2000" value="${esc(keywords(m?.keywords).replaceAll(' · ', '，'))}" placeholder="用逗号分开"></label><details><summary class="note">更多设置</summary><div class="form-grid"><label class="field">重要程度<input id="editImportance" type="number" min="0" max="1" step="0.05" value="${m?.importance ?? .5}"></label></div><label class="field">补充线索<input id="editEvidence" value="${esc(m?.evidence_summary || '')}"></label></details>${relationNote(result.related)}`, cancelSave);
       el('cancelEdit').onclick = dismissDialog;
       initialDraft = draftValues();
       el('saveEdit').onclick = () => submitDialog(el('saveEdit'), async () => {

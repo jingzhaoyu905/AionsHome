@@ -136,7 +136,17 @@ def _next_player(state: dict, player: str) -> str:
     return order[(order.index(player) + 1) % len(order)]
 
 
+def _bomb_count(state: dict) -> int:
+    # 完整出牌历史随牌局保存，旧牌局也可以恢复倍率；只统计成功出的炸弹。
+    return sum(
+        1 for entry in state.get("history", [])
+        if entry.get("event") == "play"
+        and _is_bomb_move(classify_cards(entry.get("cards", [])) or {})
+    )
+
+
 def _public_state(state: dict, for_player: Optional[str] = None) -> dict:
+    bomb_count = _bomb_count(state)
     players = {}
     for p in PLAYERS:
         hand = state["hands"].get(p, [])
@@ -156,6 +166,8 @@ def _public_state(state: dict, for_player: Optional[str] = None) -> dict:
         "order": _turn_order(state),
         "currentPlayer": state.get("current_player"),
         "currentBid": state.get("current_bid", 0),
+        "bombCount": bomb_count,
+        "multiplier": 2 ** bomb_count,
         "bids": state.get("bids", []),
         "bottomCards": state["bottom"] if state.get("bottom_revealed") else [],
         "bottomCount": len(state.get("bottom", [])),
@@ -173,12 +185,15 @@ def _public_state(state: dict, for_player: Optional[str] = None) -> dict:
 
 def _settlement(state: dict) -> dict:
     remaining = {p: len(state.get("hands", {}).get(p, [])) for p in PLAYERS}
+    bomb_count = _bomb_count(state)
     return {
         "winner": state.get("winner"),
         "winnerName": _player_name(state.get("winner")) if state.get("winner") else "未知",
         "landlord": state.get("landlord"),
         "landlordName": _player_name(state.get("landlord")) if state.get("landlord") else "未知",
         "remainingCounts": remaining,
+        "bombCount": bomb_count,
+        "multiplier": 2 ** bomb_count,
         "bottomCards": state.get("bottom", []),
         "wallet": state.get("wallet_settlement"),
     }
@@ -731,6 +746,7 @@ def _format_settlement_message(state: dict) -> str:
         card["outcome"],
         f"先出完：{card['winnerName']}",
         f"地主：{card['landlordName']}",
+        f"炸弹（含王炸）：{_bomb_count(state)} 次，本局 {2 ** _bomb_count(state)} 倍",
         "剩余手牌：" + card["remaining"],
     ]
     wallet_lines = card["walletLines"]
@@ -750,6 +766,8 @@ async def _apply_wallet_settlement(state: dict):
         return
     remaining = {p: len(state.get("hands", {}).get(p, [])) for p in PLAYERS}
     now = time.time()
+    bomb_count = _bomb_count(state)
+    multiplier = 2 ** bomb_count
     records = []
     deltas = {p: 0.0 for p in PLAYERS}
     ai_wallet = {
@@ -760,12 +778,12 @@ async def _apply_wallet_settlement(state: dict):
 
     if winner == landlord:
         for farmer in farmers:
-            penalty = float(remaining.get(farmer, 0))
+            penalty = float(remaining.get(farmer, 0)) * multiplier
             if penalty:
                 deltas[farmer] -= penalty
                 deltas[landlord] += penalty
     else:
-        penalty = float(remaining.get(landlord, 0))
+        penalty = float(remaining.get(landlord, 0)) * multiplier
         if penalty:
             deltas[landlord] -= penalty
             share = penalty / len(farmers)
@@ -791,16 +809,18 @@ async def _apply_wallet_settlement(state: dict):
             f"ddz_{state['id']}_{player}_wallet",
             record_type,
             amount,
-            f"斗地主阵营结算{verb}：{_player_name(player)} {fmt_amount(amount)} 元",
+            f"斗地主阵营结算{verb}：{_player_name(player)} {fmt_amount(amount)} 元（炸弹 {bomb_count} 次，{multiplier} 倍）",
             now,
         ))
 
     state["wallet_settlement"] = {
-        "rule": "阵营结算：地主赢则两个农民按各自剩牌扣款给地主；农民赢则地主按剩牌扣款并均分给两个农民。用户金额只展示，不写入服务器钱包。",
+        "rule": "阵营结算：地主赢则两个农民按各自剩牌扣款给地主；农民赢则地主按剩牌扣款并均分给两个农民。每出一次炸弹或王炸，整局金额乘 2，累乘叠加。用户金额只展示，不写入服务器钱包。",
         "winner": winner,
         "landlord": landlord,
         "remainingCounts": remaining,
         "deltas": deltas,
+        "bombCount": bomb_count,
+        "multiplier": multiplier,
         "records": [{"id": r[0], "recordType": r[1], "amount": r[2], "description": r[3]} for r in records],
         "lines": lines,
     }

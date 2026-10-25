@@ -218,13 +218,13 @@
     $('fullImage').hidden = false;
     $('missingImage').hidden = true;
     $('fullImage').alt = titleOf(photo);
+    imageGestures.reset();
     $('fullImage').src = photo.url;
     $('downloadLink').href = `/api/album/photos/${photo.id}/download`;
     updateNavigation();
     updateFavorite();
     setControls(false);
     if (!$('photoDialog').open) {
-      suppressClickUntil = 0;
       state.scrollTop = $('photoScroll').scrollTop;
       document.documentElement.classList.add('viewing-photo');
       setParentImmersive(true);
@@ -434,46 +434,13 @@
     finally { state.detailBusy = false; $('confirmRemoveButton').disabled = false; }
   };
 
-  // 单指左右翻页、下拉关闭；双指交给浏览器缩放，不误触关闭。
-  let gesture = null;
-  let suppressClickUntil = 0;
+  // Share image-only pinch/pan with chat and theater; page zoom is disabled in the App.
   const stage = $('imageStage');
-  const resetGesture = () => {
-    gesture = null;
-    stage.style.transform = '';
-    stage.style.opacity = '';
-  };
-  stage.addEventListener('pointerdown', event => {
-    if (!event.isPrimary || event.button !== 0 || (window.visualViewport?.scale || 1) > 1.05) {
-      resetGesture();
-      return;
-    }
-    gesture = { id: event.pointerId, x: event.clientX, y: event.clientY };
-    stage.setPointerCapture(event.pointerId);
+  const imageGestures = window.AionImageViewer.bind(stage, $('fullImage'), {
+    onSwipe: stepPhoto,
+    onDismiss: closePhoto,
+    onTap: () => setControls(!$('photoDialog').classList.contains('controls-visible')),
   });
-  stage.addEventListener('pointermove', event => {
-    if (!gesture || gesture.id !== event.pointerId) return;
-    const dx = event.clientX - gesture.x;
-    const dy = event.clientY - gesture.y;
-    if (dy > 12 && dy > Math.abs(dx) * 1.2) {
-      stage.style.transform = `translateY(${dy}px) scale(${Math.max(.8, 1 - dy / 1800)})`;
-      stage.style.opacity = String(Math.max(.3, 1 - dy / 700));
-    }
-  });
-  stage.addEventListener('pointerup', event => {
-    if (!gesture || gesture.id !== event.pointerId) return;
-    const dx = event.clientX - gesture.x;
-    const dy = event.clientY - gesture.y;
-    resetGesture();
-    if (Math.max(Math.abs(dx), Math.abs(dy)) > 12) suppressClickUntil = Date.now() + 400;
-    if (dy > 80 && dy > Math.abs(dx) * 1.2) closePhoto();
-    else if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.2) stepPhoto(dx < 0 ? 1 : -1);
-  });
-  stage.addEventListener('pointercancel', resetGesture);
-  stage.addEventListener('lostpointercapture', resetGesture);
-  stage.onclick = () => {
-    if (Date.now() >= suppressClickUntil) setControls(!$('photoDialog').classList.contains('controls-visible'));
-  };
 
   window.handleAlbumBack = () => {
     if (state.moving) return true;

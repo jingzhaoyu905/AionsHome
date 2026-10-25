@@ -3,10 +3,11 @@ import asyncio
 import json
 import logging
 import re
+import shutil
 import time
 import unicodedata
 
-from config import TTS_CACHE_DIR, get_key, get_sentinel_config
+from config import EXPRESSIVE_VOICE_DIR, TTS_CACHE_DIR, get_key, get_sentinel_config
 from database import get_db
 from generation_control import current_generation, spawn_generation_task
 import elevenlabs_tts
@@ -16,6 +17,21 @@ COMMAND = re.compile(r'\[语音\s*[|｜:：]\s*([^\[\]]*)\]')
 INCOMPLETE = re.compile(r'\[语音\s*[|｜:：][^\]]*$')
 LIMIT = 200
 _tasks = {}
+
+
+def archive_legacy_audio():
+    """Preserve existing recordings; keep old copies usable by a running server."""
+    copied = 0
+    for source in TTS_CACHE_DIR.glob('*_expressive.mp3'):
+        target = EXPRESSIVE_VOICE_DIR / source.name
+        if target.exists():
+            continue
+        try:
+            shutil.copy2(source, target)
+            copied += 1
+        except OSError:
+            log.exception('Could not archive expressive voice: %s', source.name)
+    return copied
 
 PROMPT = (
     '[语音|方向=语气指导|内容=想说给她听的话] — 想主动出声安慰、提醒、逗她一下、生气时的警告、表达情绪或亲近时使用。这句话的内容会自动转为语音文件播放。'
@@ -234,7 +250,7 @@ async def _produce(identity, data, manager, autoplay):
         scope = current_generation()
         if scope:
             scope.message_ids.add(safe_id)
-        path = TTS_CACHE_DIR / f'{safe_id}.mp3'
+        path = EXPRESSIVE_VOICE_DIR / f'{safe_id}.mp3'
         path.write_bytes(audio)
         clip.update(status='ready', url=f'/api/tts/audio/{safe_id}', error='')
         if not await _update_clip(table, data, clip, manager):

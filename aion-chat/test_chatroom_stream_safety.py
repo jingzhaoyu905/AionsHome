@@ -36,6 +36,107 @@ class _Chunks:
 
 
 class ChatroomStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
+    async def test_group_whispers_are_spoken_in_place_with_tts_switch(self):
+        for sender, mode, enabled, reply, spoken in (
+            ("aion", "safe_live", True, "前文。[悄悄话：只对你说。]后文。", "前文。只对你说。后文。"),
+            ("connor", "legacy", True, "前文。[悄悄话:只对你说。]后文。", "前文。只对你说。后文。"),
+            ("connor", "safe_live", True, "[悄悄话：只对你说。]", "只对你说。"),
+            ("aion", "legacy", False, "[悄悄话：只对你说。]", ""),
+        ):
+            with self.subTest(sender=sender, mode=mode, enabled=enabled), tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+                queue = asyncio.Queue()
+                real_streamer = chatroom_routes.TTSStreamer
+                audio_texts = []
+
+                async def stream(*args):
+                    for char in reply:
+                        yield char
+
+                async def audio(text, *args, **kwargs):
+                    audio_texts.append(text)
+                    return b"audio"
+
+                def make_streamer(msg_id, voice, manager, **kwargs):
+                    return real_streamer(msg_id, voice, cache_dir=Path(tmp), cache_max_bytes=None, **kwargs)
+
+                async def save(room_id, sender, content, msg_id, **kwargs):
+                    self.assertFalse(kwargs["auto_tts"], "group playback must follow the request switch")
+                    return {"id": msg_id, "sender": sender, "content": content, "attachments": kwargs.get("attachments", [])}
+
+                for name, value in {
+                    "build_aion_group_context": AsyncMock(return_value=([], {})),
+                    "build_connor_group_context": AsyncMock(return_value=([], {})),
+                    "stream_ai": stream, "_stream_connor_model": stream,
+                    "resolve_model_transport_mode": lambda _: mode,
+                    "TTSStreamer": make_streamer, "_save_msg": save,
+                    "_get_room_type": AsyncMock(return_value="group"),
+                    "_send_private_whisper": AsyncMock(return_value={"target_type": "conversation" if sender == "aion" else "room", "target_id": "private-target"}),
+                    "_extract_and_save_images": AsyncMock(return_value=[]),
+                    "_emit_chatroom_debug": AsyncMock(),
+                    "_chatroom_debug_payload": MagicMock(return_value={}),
+                    "_fire_chatroom_followups": MagicMock(),
+                }.items():
+                    stack.enter_context(patch.object(chatroom_routes, name, value))
+                stack.enter_context(patch("tts._request_tts_audio", new=audio))
+                if sender == "aion":
+                    await chatroom_routes._reply_aion("room", [], 30, "hello", "model", queue, tts_enabled=enabled, tts_voice="voice")
+                else:
+                    await chatroom_routes._reply_connor("room", [], 30, "hello", queue, tts_enabled=enabled, tts_voice="voice")
+                self.assertEqual("".join(audio_texts), spoken)
+                events = [queue.get_nowait() for _ in range(queue.qsize())]
+                message = next(e["message"] for e in events if e["type"] == f"{sender}_done")
+                self.assertNotIn("只对你说", message["content"])
+                self.assertIn({"type": "private_whisper_sent", "count": 1,
+                               "target_type": "conversation" if sender == "aion" else "room",
+                               "target_id": "private-target"}, message["attachments"])
+                from context_builder import render_merged_timeline
+                history = render_merged_timeline([{**message, "source": "group", "created_at": 1}], sender)
+                self.assertEqual(history, render_merged_timeline([{**message, "source": "group", "created_at": 1, "attachments": []}], sender))
+                if mode == "safe_live":
+                    visible = "".join(e["content"] for e in events if e["type"] == f"{sender}_chunk")
+                    self.assertNotIn("只对你说", visible)
+
+    async def test_whisper_delivery_failure_has_no_sent_receipt(self):
+        with (
+            patch.object(chatroom_routes, "_get_room_type", new=AsyncMock(return_value="group")),
+            patch.object(chatroom_routes, "_send_private_whisper", new=AsyncMock(side_effect=RuntimeError("delivery failed"))),
+        ):
+            content, triggered = await chatroom_routes._process_chatroom_commands(
+                "前文。[悄悄话：私聊内容]后文。", "room", "aion", "msg", asyncio.Queue())
+        self.assertEqual(content, "前文。后文。")
+        self.assertEqual(chatroom_routes._private_whisper_attachments(triggered), [])
+
+    async def test_connor_whisper_delivery_does_not_start_separate_audio(self):
+        async with aiosqlite.connect(":memory:") as db:
+            await db.executescript("""
+                CREATE TABLE chatroom_rooms (id TEXT, type TEXT, updated_at REAL);
+                CREATE TABLE chatroom_messages (
+                    id TEXT, room_id TEXT, sender TEXT, content TEXT,
+                    attachments TEXT, reasoning_content TEXT, created_at REAL
+                );
+                INSERT INTO chatroom_rooms VALUES ('private', 'connor_1v1', 0);
+            """)
+
+            @asynccontextmanager
+            async def get_db():
+                yield db
+
+            with (
+                patch.object(chatroom_routes, "get_db", get_db),
+                patch.object(chatroom_routes, "_get_or_create_connor_private_room", new=AsyncMock(return_value="private")),
+                patch.object(chatroom_routes, "broadcast_synced", new=AsyncMock()),
+                patch.object(chatroom_routes, "connor_1v1_on_message"),
+                patch.object(chatroom_routes, "_with_link_previews", new=AsyncMock(side_effect=lambda text, atts: atts)),
+                patch.object(chatroom_routes, "with_band_vibration_attachment", new=AsyncMock(side_effect=lambda msg_id, atts: atts)),
+                patch.object(chatroom_routes, "_chatroom_auto_tts_voice", return_value="voice"),
+                patch.object(chatroom_routes, "synthesize_message_tts_later") as synthesize,
+            ):
+                target = await chatroom_routes._send_private_whisper("connor", "私聊内容")
+                self.assertEqual(target, {"target_type": "room", "target_id": "private"})
+                cursor = await db.execute("SELECT content FROM chatroom_messages WHERE room_id='private'")
+                self.assertEqual((await cursor.fetchone())[0], "私聊内容")
+                synthesize.assert_not_called()
+
     async def test_reply_is_finalized_while_audio_is_still_synthesizing(self):
         # A slow provider must not hold the final, formatted message hostage.
         for route in ("aion", "connor", "connor_private"):

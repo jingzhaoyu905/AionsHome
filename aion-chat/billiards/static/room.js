@@ -285,7 +285,7 @@
         const entry=element('details','history-entry'),head=element('summary');
         head.append(element('strong','history-match-title',saved.players.map(p=>labels[p]).join('  vs  ')),element('span','history-score',saved.score.join(' : ')));
         const match=saved.match;
-        const result=match.status==='completed'?`${labels[saved.players[match.winner]]}夺冠`:match.status==='abandoned'?'本场中止':'旧版自由对局';
+        const result=match.status==='completed'?`${labels[saved.players[match.winner]]}夺冠`:match.status==='abandoned'?'本场中止':match.status==='active'?(saved.status==='running'?'整场进行中':'整场待续'):'旧版自由对局';
         head.append(element('span','history-caption',`${dateLabel(saved.updated_at)} · ${result}`));
         const detail=element('div','history-detail');entry.append(head,detail);
         entry.addEventListener('toggle',async()=>{

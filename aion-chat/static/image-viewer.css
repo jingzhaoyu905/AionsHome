@@ -1,0 +1,27 @@
+/* Shared photo gestures and chat attachment stacks. */
+.chat-image-group { display:grid; grid-template-columns:60px minmax(0,120px); gap:8px; width:min(100%,188px); max-width:100%; align-items:start; margin:4px 0 6px; }
+.chat-image-toggle { grid-column:1; grid-row:1; align-self:start; margin-top:35px; min-height:44px; padding:6px 8px; border:0; border-radius:22px; background:var(--bg3,#7773); color:var(--text2,inherit); font:inherit; font-size:12px; white-space:nowrap; cursor:pointer; }
+.chat-image-cards { grid-column:2; grid-row:1; position:relative; min-width:0; margin-right:8px; }
+.chat-image-cards > img { display:block; width:100%; height:auto; max-height:150px; margin:0; box-sizing:border-box; background:var(--bg2,#252525); border:1px solid #8883; object-fit:contain; }
+.chat-image-group:not(.expanded) .chat-image-cards > img { position:absolute; inset:0; height:100%; pointer-events:none; }
+.chat-image-group:not(.expanded) .chat-image-cards > img:first-child { position:relative; height:auto; z-index:3; pointer-events:auto; }
+.chat-image-group:not(.expanded) .chat-image-cards > img:nth-child(2) { transform:translate(4px,3px) rotate(2deg); z-index:2; }
+.chat-image-group:not(.expanded) .chat-image-cards > img:nth-child(3) { transform:translate(7.5px,6px) rotate(4deg); z-index:1; }
+.chat-image-group:not(.expanded) .chat-image-cards > img:nth-child(n+4) { display:none; }
+.chat-image-group.expanded .chat-image-cards { display:flex; flex-direction:column; gap:4px; }
+.aion-image-viewer { position:fixed; inset:0; z-index:10000; background:#08090bf5; color:white; isolation:isolate; }
+.aion-image-stage { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; overflow:hidden; touch-action:none; user-select:none; -webkit-user-select:none; }
+.aion-image-stage img { display:block; width:auto; height:auto; max-width:100%; max-height:100%; object-fit:contain; transform-origin:center; -webkit-user-drag:none; -webkit-touch-callout:none; will-change:transform; }
+.aion-viewer-controls { position:absolute; inset:0; pointer-events:none; }
+.aion-viewer-controls button { pointer-events:auto; min-width:44px; min-height:44px; border:1px solid #ffffff26; border-radius:24px; padding:8px 14px; color:#fff; background:#303238b8; font:inherit; cursor:pointer; touch-action:manipulation; }
+.aion-viewer-controls button:disabled { opacity:.3; cursor:default; }
+.aion-viewer-top { position:absolute; top:0; left:0; right:0; padding:max(14px,env(safe-area-inset-top)) 16px 14px; display:flex; justify-content:space-between; align-items:center; background:linear-gradient(#0008,transparent); }
+.aion-viewer-bottom { position:absolute; bottom:0; left:0; right:0; padding:24px 16px max(18px,env(safe-area-inset-bottom)); text-align:center; background:linear-gradient(transparent,#0009); }
+.aion-viewer-bottom button { margin:0 5px; font-size:13px; }
+.aion-viewer-hint { font-size:12px; color:#fffb; margin:10px 0 0; }
+.aion-viewer-prev,.aion-viewer-next { position:absolute; top:50%; transform:translateY(-50%); font-size:24px !important; }
+.aion-viewer-prev { left:10px; }
+.aion-viewer-next { right:10px; }
+.aion-viewer-error { position:absolute; pointer-events:none; color:#ddd; padding:24px; text-align:center; }
+.aion-image-viewer.controls-hidden .aion-viewer-controls { visibility:hidden; }
+@media (prefers-reduced-motion:no-preference) { .chat-image-toggle { transition:background .15s; } }

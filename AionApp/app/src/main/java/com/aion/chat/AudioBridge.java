@@ -38,67 +38,80 @@ public class AudioBridge {
         this.videoBridge = vb;
     }
 
+    interface PcmListener {
+        void onPcm(byte[] data);
+        void onStopped();
+    }
+    private PcmListener owner;
+    private Thread captureThread;
+
     @JavascriptInterface
-    public boolean start() {
-        if (recording) return false;
+    public boolean start() { return startCapture(null); }
 
+    synchronized boolean startCapture(PcmListener listener) {
+        if (recorder != null) return false;
         int minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING);
-        int bufSize = Math.max(minBuf, FRAME_BYTES * 4);
-
+        AudioRecord capture;
         try {
-            recorder = new AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                    SAMPLE_RATE, CHANNEL, ENCODING, bufSize);
-        } catch (SecurityException e) {
-            return false;
-        }
-
-        if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
-            recorder.release();
-            recorder = null;
-            return false;
-        }
-
-        recorder.startRecording();
+            capture = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                    SAMPLE_RATE, CHANNEL, ENCODING, Math.max(minBuf, FRAME_BYTES * 4));
+            if (capture.getState() != AudioRecord.STATE_INITIALIZED) { capture.release(); return false; }
+            try { capture.startRecording(); }
+            catch (RuntimeException e) { capture.release(); return false; }
+        } catch (RuntimeException e) { return false; }
+        recorder = capture;
+        owner = listener;
         recording = true;
-
-        new Thread(() -> {
-            byte[] buf = new byte[FRAME_BYTES];
-            while (recording) {
-                int read = recorder.read(buf, 0, buf.length);
-                if (read > 0) {
-                    // 推送给 VideoBridge（视频录制时）
-                    VideoBridge vb = videoBridge;
-                    if (vb != null && vb.isRecording()) {
-                        vb.onAudioFrame(buf, read);
+        captureThread = new Thread(() -> {
+            try {
+                byte[] buf = new byte[FRAME_BYTES];
+                while (recording) {
+                    int read = capture.read(buf, 0, buf.length);
+                    if (read <= 0) break;
+                    if (listener != null) {
+                        listener.onPcm(java.util.Arrays.copyOf(buf, read));
+                        continue;
                     }
-
+                    VideoBridge vb = videoBridge;
+                    if (vb != null && vb.isRecording()) vb.onAudioFrame(buf, read);
                     String b64 = Base64.encodeToString(buf, 0, read, Base64.NO_WRAP);
-                    // 推送到前端 JS（必须在 UI 线程执行）
                     webView.post(() -> {
-                        if (recording) {
+                        if (recording && recorder == capture) {
                             webView.evaluateJavascript(
                                     "typeof remoteVoice!=='undefined'&&remoteVoice._onNativeChunk('" + b64 + "');" +
                                     "typeof videoCall!=='undefined'&&videoCall._onNativeChunk&&videoCall._onNativeChunk('" + b64 + "');" +
                                     "typeof _ambientNativeOnChunk==='function'&&_ambientNativeOnChunk('" + b64 + "');" +
-                                    "typeof _voiceNativeOnChunk==='function'&&_voiceNativeOnChunk('" + b64 + "')",
-                                    null);
+                                    "typeof _voiceNativeOnChunk==='function'&&_voiceNativeOnChunk('" + b64 + "')", null);
                         }
                     });
                 }
+            } finally {
+                try { capture.stop(); } catch (Exception ignored) { }
+                capture.release();
+                synchronized (AudioBridge.this) {
+                    if (recorder == capture) { recording = false; recorder = null; owner = null; }
+                }
+                if (listener != null) listener.onStopped();
             }
-        }, "AionMicThread").start();
-
+        }, "AionMicThread");
+        captureThread.start();
         return true;
     }
 
     @JavascriptInterface
-    public void stop() {
-        recording = false;
-        if (recorder != null) {
-            try { recorder.stop(); } catch (Exception ignored) {}
-            try { recorder.release(); } catch (Exception ignored) {}
-            recorder = null;
+    public void stop() { stopCapture(null); }
+
+    void stopCapture(PcmListener listener) {
+        Thread thread;
+        synchronized (this) {
+            if (recorder == null || owner != listener) return;
+            recording = false;
+            try { recorder.stop(); } catch (Exception ignored) { }
+            thread = captureThread;
+        }
+        // Do not hold the bridge lock while capture's finally block releases the recorder.
+        if (thread != null && thread != Thread.currentThread()) {
+            try { thread.join(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         }
     }
 

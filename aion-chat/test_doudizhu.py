@@ -5,6 +5,7 @@ import asyncio
 import sys
 from types import ModuleType
 from unittest.mock import AsyncMock, patch
+from contextlib import asynccontextmanager
 
 from routes import doudizhu as game
 
@@ -108,6 +109,69 @@ class DoudizhuStrategyTests(unittest.TestCase):
         changed["hands"]["user"] = ["4D"]
         changed["hands"]["connor"] = ["5D", "6D", "7D", "8D", "9D", "10D"]
         self.assertEqual(choose(state)["cards"], choose(changed)["cards"])
+
+
+class DoudizhuBombTests(unittest.IsolatedAsyncioTestCase):
+    def test_bombs_stack_across_players_and_rocket_finishes_at_eight_times(self):
+        state = table(["3S", "3H", "3C", "3D", "5S"],
+                      teammate=["4S", "4H", "4C", "4D", "6S"], user=["BJ", "RJ"])
+        self.assertEqual(game._public_state(state)["multiplier"], 1)
+        game.apply_play(state, "aion", "play", ["3S", "3H", "3C", "3D"])
+        self.assertEqual(game._public_state(state)["multiplier"], 2)
+        game.apply_play(state, "connor", "play", ["4S", "4H", "4C", "4D"])
+        self.assertEqual(game._public_state(state)["multiplier"], 4)
+        game.apply_play(state, "user", "play", ["BJ", "RJ"])
+        view = game._public_state(json.loads(json.dumps(state)))
+        self.assertEqual(view["phase"], "game_over")
+        self.assertEqual(view["bombCount"], 3)
+        self.assertEqual(view["settlement"]["multiplier"], 8)
+        self.assertIn("8 倍", game._format_settlement_message(state))
+        self.assertEqual(game._public_state(game._make_game())["multiplier"], 1)
+
+    def test_passes_and_rejected_bombs_do_not_double(self):
+        state = table(["4S", "4H", "4C", "4D", "6S"],
+                      teammate=["3S", "3H", "3C", "3D", "7S"])
+        game.apply_play(state, "aion", "play", ["4S", "4H", "4C", "4D"])
+        with self.assertRaises(ValueError):
+            game.apply_play(state, "connor", "play", ["3S", "3H", "3C", "3D"])
+        game.apply_play(state, "connor", "pass", [])
+        game.apply_play(state, "user", "pass", [])
+        game.apply_play(state, "aion", "play", ["6S"])
+        self.assertEqual(game._public_state(state)["multiplier"], 2)
+        self.assertEqual(game._public_state(state)["bombCount"], 1)
+
+    def test_four_with_wings_does_not_double(self):
+        state = table(["3S", "3H", "3C", "3D", "4S", "5S"])
+        game.apply_play(state, "aion", "play", state["hands"]["aion"][:])
+        self.assertEqual(game._public_state(state)["settlement"]["multiplier"], 1)
+
+    async def test_wallet_uses_multiplier_for_both_teams_and_settles_once(self):
+        for winner, expected in [
+            ("aion", {"user": -12.0, "aion": 20.0, "connor": -8.0}),
+            ("user", {"user": 10.0, "aion": -20.0, "connor": 10.0}),
+        ]:
+            with self.subTest(winner=winner):
+                state = table(["3S"] * 5, user=["4S"] * 3, teammate=["5S"] * 2)
+                state["hands"][winner] = []
+                state.update(phase="game_over", winner=winner, history=[
+                    {"event": "play", "cards": ["6S", "6H", "6C", "6D"]},
+                    {"event": "play", "cards": ["BJ", "RJ"]},
+                ])
+                db = AsyncMock()
+                @asynccontextmanager
+                async def test_db():
+                    yield db
+                with patch.object(game, "get_db", test_db):
+                    await game._apply_wallet_settlement(state)
+                    await game._apply_wallet_settlement(state)
+                self.assertEqual(state["wallet_settlement"]["deltas"], expected)
+                self.assertEqual(state["wallet_settlement"]["multiplier"], 4)
+                self.assertEqual(db.execute.await_count, 2)
+                db.commit.assert_awaited_once()
+                for call in db.execute.await_args_list:
+                    record = call.args[1]
+                    player = "aion" if record[1] == "wallet_ai" else "connor"
+                    self.assertEqual(record[2], expected[player])
 
 
 class DoudizhuTurnTests(unittest.IsolatedAsyncioTestCase):

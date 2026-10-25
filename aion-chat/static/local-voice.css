@@ -1,0 +1,16 @@
+.voice-record-overlay .vr-transcript {
+  position: relative;
+  color: #fff;
+  background: rgba(0, 0, 0, .7);
+  border-radius: 16px;
+  padding: 12px 18px;
+  margin: 0 20px 12px;
+  max-width: min(520px, 86vw);
+  max-height: 25vh;
+  overflow-y: auto;
+  font-size: 17px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}

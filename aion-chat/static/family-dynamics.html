@@ -61,6 +61,8 @@ body[data-theme="dark"] .private-space-wrap>.niche-pager button:not(:disabled):h
 @media(max-width:650px){.role-grid{grid-template-columns:1fr}.actions{grid-template-columns:1fr 1fr}}
 @media(max-width:650px) and (min-height:700px){#privateSpacePane{justify-content:flex-start;padding-left:4px;padding-right:4px}.private-space-wrap{--private-space-width:min(100%,520px);gap:6px}.private-space-scene{aspect-ratio:2/3}}
 </style>
+<link rel="stylesheet" href="/static/image-viewer.css?v=20261024">
+<script src="/static/image-viewer.js?v=20261024"></script>
 </head>
 <body>
 <div class="sub-page">
@@ -138,7 +140,7 @@ function showDetail(timestamp,title,text,images,sources,isNiche=false){
   $('timelineDetailText').textContent=text;
   const safeImages=(Array.isArray(images)?images:[]).filter(url=>typeof url==='string'&&url);
   $('timelineDetailImages').classList.toggle('album-preview',safeImages.some(url=>url.startsWith('/uploads/album/')));
-  $('timelineDetailImages').innerHTML=safeImages.map(url=>`<img src="${escHtml(url)}" alt="壁龛照片" loading="lazy">`).join('');
+  $('timelineDetailImages').innerHTML=safeImages.map(url=>`<img src="${escHtml(url)}" alt="壁龛照片" loading="lazy" onclick="AionImageViewer.openFromElement(this)" style="cursor:zoom-in">`).join('');
   const safeSources=Array.isArray(sources)?sources:[];
   $('nicheSources').classList.toggle('show',safeSources.length>0);$('nicheSources').open=false;
   $('nicheSourceLinks').innerHTML=safeSources.map(source=>`<a href="${escHtml(source.url||'')}" target="_blank" rel="noopener">${escHtml(source.title||'旅行线索')}</a>`).join('');

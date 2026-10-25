@@ -1035,7 +1035,7 @@ function scheduleTTSResume() {
 }
 
 function isTTSPlaybackAllowed() {
-  return true;
+  return window.AionTtsAudio?.isForeground?.() !== false;
 }
 
 function stopLiveTTSQueue() {
@@ -1754,6 +1754,7 @@ function handleSync(msg) {
     // 生图失败 → 移除占位指示器
     if (data.conv_id === currentConvId) {
       dismissImageGenIndicator();
+      showToast(data.error || '图片生成失败，请稍后重试');
     }
   } else if (type === "song_gen_start") {
     if (data.conv_id === currentConvId && !streamingAiId) {
@@ -1768,8 +1769,8 @@ function handleSync(msg) {
   } else if (type === "monitor_alert") {
     // 定时监控即将触发，播放提示音
     if (!data.phone_camera_native_capture) {
-      if (window.AionTtsAudio && typeof window.AionTtsAudio.play === 'function') {
-        window.AionTtsAudio.play('tts-monitor-alert', '/public/AionMonitoralart.mp3');
+      if (window.AionTtsAudio && typeof window.AionTtsAudio.playMonitorAlert === 'function') {
+        window.AionTtsAudio.playMonitorAlert();
       } else {
         const audio = new Audio('/public/AionMonitoralart.mp3');
         audio.play().catch(() => {});
@@ -3708,8 +3709,8 @@ function handleCamCheck(convId, modelKey, msgId) {
   // 保底30秒安全超时：防止AI无响应时提示一直卡着
   camCheckSafetyTimer = setTimeout(() => dismissCamCheckIndicator(), 30000);
 
-  if (window.AionTtsAudio && typeof window.AionTtsAudio.play === 'function') {
-    window.AionTtsAudio.play('tts-monitor-alert', '/public/AionMonitoralart.mp3');
+  if (window.AionTtsAudio && typeof window.AionTtsAudio.playMonitorAlert === 'function') {
+    window.AionTtsAudio.playMonitorAlert();
   } else {
     const audio = new Audio('/public/AionMonitoralart.mp3');
     audio.play().catch(() => {});
@@ -3812,36 +3813,12 @@ function imageInteractionAttrs() {
   return 'onclick="return openImageFromElement(event, this)" oncontextmenu="showImageSaveMenu(ChatImagePreview.original(this)); return false;" onpointerdown="startImageLongPress(event, ChatImagePreview.original(this))" onpointermove="moveImageLongPress(event)" onpointerup="cancelImageLongPress()" onpointerleave="cancelImageLongPress()" onpointercancel="cancelImageLongPress()" draggable="false"';
 }
 
-function bindImageSaveOnly(img, clickHandler) {
-  if (!img) return;
-  img.oncontextmenu = (event) => {
-    event.preventDefault();
-    showImageSaveMenu(img.src);
-    return false;
-  };
-  img.onpointerdown = (event) => startImageLongPress(event, img.src);
-  img.onpointermove = moveImageLongPress;
-  img.onpointerup = cancelImageLongPress;
-  img.onpointerleave = cancelImageLongPress;
-  img.onpointercancel = cancelImageLongPress;
-  img.onclick = (event) => {
-    event.stopPropagation();
-    if (Date.now() < imageLongPressSuppressClickUntil) {
-      event.preventDefault();
-      return false;
-    }
-    if (typeof clickHandler === 'function') clickHandler();
-    return false;
-  };
-  img.draggable = false;
-}
-
 function openImageFromElement(event, img) {
   if (Date.now() < imageLongPressSuppressClickUntil) {
     if (event) event.preventDefault();
     return false;
   }
-  openImageViewer(ChatImagePreview.original(img));
+  openImageViewer(ChatImagePreview.original(img), img);
   return false;
 }
 
@@ -3922,21 +3899,12 @@ function getImageSaverBridge() {
   return null;
 }
 
-function openImageViewer(url) {
-  const overlay = document.createElement('div');
-  overlay.className = 'image-viewer-overlay';
-  overlay.innerHTML = `
-    <button class="image-viewer-close" onclick="this.parentElement.remove()">&times;</button>
-    <img src="${url}" alt="图片">
-    <div class="image-viewer-actions">
-      <button onclick="saveImage('${url}')">💾 保存图片</button>
-      <button onclick="this.closest('.image-viewer-overlay').remove()">关闭</button>
-    </div>
-  `;
-  bindImageSaveOnly(overlay.querySelector('img'), () => overlay.remove());
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-  document.body.appendChild(overlay);
-  requestAnimationFrame(() => overlay.classList.add('active'));
+function openImageViewer(url, img) {
+  const group = img?.closest('.chat-image-group');
+  const images = group ? [...group.querySelectorAll('img')] : [];
+  window.AionImageViewer.open(images.length ? images.map(ChatImagePreview.original) : [url], Math.max(0, images.indexOf(img)), {
+    onSave: saveImage, onLongPress: showImageSaveMenu,
+  });
 }
 function saveImage(url) {
   fetch(url)
@@ -4491,6 +4459,7 @@ function buildLinkPreviewCard(item) {
 function renderAttachments(atts) {
   if (!atts || !atts.length) return '';
   let mediaHtml = '';
+  const images = [];
   let capsuleHtml = '';
   let voiceHtml = '';
   let wishHtml = '';
@@ -4565,12 +4534,16 @@ function renderAttachments(atts) {
       const url = typeof item === 'string' ? item : (item && item.url ? item.url : '');
       if (/\.(mp4|webm|mov)$/i.test(url)) mediaHtml += `<video src="${escHtml(url)}" controls preload="metadata"></video>`;
       else if (/\.(mp3|wav|m4a|aac|ogg)$/i.test(url)) mediaHtml += `<audio src="${escHtml(url)}" controls preload="metadata"></audio>`;
-      else if (url) mediaHtml += `<img ${ChatImagePreview.attributes(url)} ${imageInteractionAttrs()}>`;
+      else if (url) {
+        if (!images.length) mediaHtml += '<!--chat-images-->';
+        images.push(`<img ${ChatImagePreview.attributes(url)} ${imageInteractionAttrs()}>`);
+      }
     }
   });
   let html = '';
   if (voiceHtml) html += voiceHtml;
   if (wishHtml) html += wishHtml;
+  if (images.length) mediaHtml = mediaHtml.replace('<!--chat-images-->', ChatImagePreview.group(images));
   if (mediaHtml) html += '<div class="msg-media">' + mediaHtml + '</div>';
   if (capsuleHtml) html += capsuleHtml;
   return html;
@@ -4839,6 +4812,9 @@ let _voiceCancelled = false;
 // Android 原生录音
 let _voiceNativeChunks = [];
 let _voiceUseNative = false;
+let _voiceLocalSession = null;
+let _voiceFinishing = false;
+let _voiceTarget = null;
 
 function toggleVoiceMode() {
   _voiceMode = !_voiceMode;
@@ -4872,12 +4848,13 @@ function _initVoiceHoldBtn() {
 }
 
 async function _voiceStartRecord(evt) {
-  if (_voiceRecording || sending) return;
+  if (_voiceRecording || _voiceFinishing || sending) return;
   _voiceRecording = true;
   _voiceCancelled = false;
   _voiceChunks = [];
   _voiceNativeChunks = [];
   _voiceStartTime = Date.now();
+  _voiceTarget = currentConvId;
 
   // 创建录制浮层
   _voiceOverlay = document.createElement('div');
@@ -4885,6 +4862,7 @@ async function _voiceStartRecord(evt) {
   _voiceOverlay.innerHTML = `
     <div class="vr-bg"></div>
     <div class="vr-trash-zone" id="vrTrash">🗑️</div>
+    <div class="vr-transcript" id="vrTranscript" hidden></div>
     <div class="vr-timer" id="vrTimer">0:00</div>
     <div class="vr-hint" id="vrHint">↑ 上滑取消</div>
   `;
@@ -4892,6 +4870,7 @@ async function _voiceStartRecord(evt) {
 
   // 计时器
   _voiceTimerInterval = setInterval(() => {
+    if (_voiceTarget !== (currentConvId)) { _voiceCleanup(); return; }
     const sec = Math.floor((Date.now() - _voiceStartTime) / 1000);
     const m = Math.floor(sec / 60);
     const s = sec % 60;
@@ -4905,6 +4884,22 @@ async function _voiceStartRecord(evt) {
 
   // 开始录音
   _voiceUseNative = false;
+
+  if (window.AionLocalVoice?.enabled()) {
+    const subtitle = document.getElementById('vrTranscript');
+    subtitle.hidden = false;
+    subtitle.textContent = '正在准备本地识别…';
+    try {
+      _voiceLocalSession = window.AionLocalVoice.start({
+        onText: text => { subtitle.textContent = text || '正在听…'; subtitle.scrollTop = subtitle.scrollHeight; },
+        onReady: () => { if (!subtitle.textContent || subtitle.textContent === '正在准备本地识别…') subtitle.textContent = '正在听…'; },
+        onError: message => { _voiceCleanup(); alert(message); },
+        onCancel: () => _voiceCleanup()
+      });
+    } catch (e) { _voiceCleanup(); alert(e.message || '本地识别启动失败'); }
+    return;
+  }
+
   try {
     _voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     _voiceMediaRecorder = new MediaRecorder(_voiceStream, { mimeType: _getVoiceMime() });
@@ -4974,6 +4969,24 @@ async function _voiceStopRecord(evt) {
     return;
   }
 
+  if (_voiceLocalSession) {
+    const session = _voiceLocalSession;
+    const targetId = _voiceTarget;
+    _voiceFinishing = true;
+    if (_voiceTimerInterval) { clearInterval(_voiceTimerInterval); _voiceTimerInterval = null; }
+    const hint = document.getElementById('vrHint');
+    if (hint) hint.textContent = '正在完成识别…';
+    try {
+      const result = await session.finish();
+      _voiceCleanup();
+      if (!result || targetId !== (currentConvId) || document.hidden || window.AionLocalVoice?.isVisible?.() === false) return;
+      if (!result.text?.trim()) { alert('没有听清，请再说一次'); return; }
+      if (result.duration < 0.5) return;
+      await _voiceSendMessage(window.AionLocalVoice.wavBlob(result.wav), result.duration, result.text.trim(), targetId);
+    } finally { _voiceFinishing = false; }
+    return;
+  }
+
   let audioBlob;
   if (_voiceUseNative) {
     // Android 原生录音：PCM chunks → WAV
@@ -5000,6 +5013,7 @@ async function _voiceStopRecord(evt) {
 }
 
 function _voiceCleanup() {
+  if (_voiceLocalSession) { _voiceLocalSession.cancel(); _voiceLocalSession = null; }
   if (_voiceTimerInterval) { clearInterval(_voiceTimerInterval); _voiceTimerInterval = null; }
   if (_voiceOverlay) { _voiceOverlay.remove(); _voiceOverlay = null; }
   if (_voiceStream) { _voiceStream.getTracks().forEach(t => t.stop()); _voiceStream = null; }
@@ -5049,7 +5063,7 @@ function _buildWavFromNativeChunks(chunks) {
   return new Blob([wavBuf], { type: 'audio/wav' });
 }
 
-async function _voiceSendMessage(audioBlob, duration) {
+async function _voiceSendMessage(audioBlob, duration, localTranscript = null, targetId = currentConvId) {
   if (!currentConvId || sending) return;
 
   // 1. 上传音频文件
@@ -5068,8 +5082,8 @@ async function _voiceSendMessage(audioBlob, duration) {
   // 2. 转写音频（失败自动重试一次）
   const fd2 = new FormData();
   fd2.append('file', audioBlob, `voice.${ext}`);
-  let transcript = '';
-  for (let _try = 0; _try < 2; _try++) {
+  let transcript = localTranscript == null ? '' : localTranscript;
+  for (let _try = 0; localTranscript == null && _try < 2; _try++) {
     try {
       const body2 = _try === 0 ? fd2 : (() => { const f = new FormData(); f.append('file', audioBlob, `voice.${ext}`); return f; })();
       const res2 = await fetch('/api/voice/transcribe', { method: 'POST', body: body2 });
@@ -5081,6 +5095,8 @@ async function _voiceSendMessage(audioBlob, duration) {
       console.warn(`[VoiceMsg] Transcribe attempt ${_try+1} failed:`, e);
     }
   }
+
+  if (targetId !== (currentConvId) || sending || document.hidden || window.AionLocalVoice?.isVisible?.() === false) return;
 
   // 3. 构建语音附件
   const voiceAtt = {
@@ -5703,6 +5719,7 @@ function notifySubPageLifecycle(frame, visible) {
 
 window.onAionAppForegroundChanged = function(active) {
   _aionAppForeground = !!active;
+  _sendTTSState();
   notifySubPageLifecycle(activeSubPageFrame, !!activeSubPageFrame);
 };
 
@@ -5938,8 +5955,10 @@ function navigateToHome() {
 }
 // Android 原生返回键回调
 function handleNativeBack() {
+  if (window.AionImageViewer?.close()) return 'handled';
   const ov = $('subPageOverlay');
   if (ov && ov.classList.contains('show')) {
+    try { if (activeSubPageFrame?.contentWindow?.AionImageViewer?.close()) return 'handled'; } catch(e) {}
     const path = (() => {
       try { return new URL(currentSubPage || '', location.origin).pathname; } catch(e) { return currentSubPage || ''; }
     })();

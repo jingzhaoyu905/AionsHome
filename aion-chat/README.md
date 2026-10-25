@@ -4,6 +4,9 @@
 局域网 + 外网（Tailscale 组网）多端同步 AI 聊天程序 + 摄像头智能监控系统。PC/手机浏览器同时使用，支持 PWA 安装为独立 App（全屏无地址栏），数据全部存在本地电脑上。
 
 ## 技术栈
+
+指定语音（`[语音|方向=…|内容=…]` 主动语音）的 MP3 长期保存在 `data/voice_keepsakes/`（语音珍藏），不参与日常 TTS 缓存清理。服务启动时会把 `data/tts_cache/` 中已有的 `*_expressive.mp3` 复制到珍藏目录，不覆盖已保存文件；旧聊天卡片的播放地址保持可用。备份时请一并保存此目录。
+
 - **后端**：Python FastAPI + SQLite (aiosqlite) + WebSocket
 - **前端**：多页面架构（原生 JS，无框架），暖光主题，手机/PC 自适应。chat.html/css/js 为主聊天页（结构/样式/逻辑分离），独立功能页通过 common.css/common.js 共享样式和工具函数
 - **摄像头**：OpenCV (`cv2`) DirectShow 后端后台线程采集 + ESP32-CAM HTTP 远程抓帧（双摄切换 + App 桥接模式）
@@ -396,14 +399,16 @@
 ### AI 生图（[SELFIE:xxx] / [DRAW:xxx]）
 设置 → 生图模型可选择 **Codex 登录额度**：通过现有 Codex CLI 的 App Server 调用内置生图，复用小家的 ChatGPT 登录态，不需要生图 API Key，也不会在失败后切换至付费 API。原有 API 配置继续保留，可随时切回。Codex 单次生图最多等待 600 秒（10 分钟），超时中止该任务。
 
-自拍按内部身份选取 `public/生图锚点.jpg` 或 `public/2号机生图锚点.jpg`；小剧场沿用故事选中的人物锚点，按场景人物姓名或别名筛选照片，按编号明确照片与人物的对应关系后传给 Codex。图片继续由统一相册保存并回填聊天或章节。Codex 自拍缺少参考照时会报失败，不会悄悄生成陌生脸。
+设置 → 生图模型 → **管理人物锚点**，与小剧场的「人物锚点」打开同一个编辑器，直接读写原有的人物资料。名字或别名匹配聊天配置时自动识别身份，也可以手动绑定；修改一次，两边生效。私聊和群聊让模型在原指令内注明出场人物，例如 `[DRAW: characters=anchor_人物编号1,anchor_人物编号2 | English scene prompt]`；不含已保存人物时使用 `characters=none`。后端只附这些人物的照片，名字与照片逐张对应，服饰、动作、画风和环境由当前场景决定。
 
-400. **AI 自主生图** — AI 在回复中输出 `[SELFIE:prompt]`（自拍/角色一致性生图）或 `[DRAW:prompt]`（自由创作生图）指令，后端自动检测并异步调用 Gemini 生图 API
-401. **SELFIE 模式** — 附带 `public/生图锚点.jpg` 作为参考图片（base64 inlineData），Gemini 基于参考图生成角色一致的新图片，适合 AI 发自拍
-402. **DRAW 模式** — 纯文本 prompt 自由生图，不附带参考图，适合 AI 画画/创作
+自拍优先使用共用人物锚点；没有对应人物时，才按内部身份使用 `public/生图锚点.jpg` 或 `public/2号机生图锚点.jpg`。已对应的人物照片失效会提示失败，不会悄悄换脸。小剧场继续按故事所选人物和场景人物姓名或别名筛选参考照。Codex、兼容 API 和 Gemini 共用相同的参考图选择结果，图片由统一相册保存并回填聊天或章节。
+
+400. **AI 自主生图** — AI 在回复中输出 `[SELFIE:prompt]`（自拍）或 `[DRAW:prompt]`（自由创作）指令，后端自动检测并异步调用设置中选择的生图来源
+401. **SELFIE 模式** — 按明确出场人物带照片；旧格式默认取发言者的共用锚点，无绑定时兼容原有自拍照片
+402. **DRAW 模式** — 按指令中的出场人物附带参考照；`characters=none` 或旧纯文本格式不附带人物参考图
 403. **异步非阻塞** — 生图任务通过 `asyncio.create_task()` 在后台执行，不阻塞聊天流和页面操作。生图期间用户可继续发消息、切换页面
 404. **加载指示器** — 检测到生图指令后在 AI 消息下方显示「🎨 {AI名} 正在发送图片 ● ● ●」橙色主题弹跳动画（renderMessages 重建后自动恢复）
-405. **图片消息** — 生图完成后，图片保存到 `data/uploads/img_gen_{timestamp}.{ext}`，创建新 assistant 消息（附带图片附件），通过 WebSocket 广播 `msg_created` + `image_gen_done` 事件
+405. **图片消息** — 生图完成后由统一相册保存图片，创建新 assistant 消息（附带图片附件），通过 WebSocket 广播 `msg_created` + `image_gen_done` 事件
 406. **图片查看器** — 聊天中的图片点击后弹出全屏 lightbox，支持保存图片（浏览器用 blob 下载，Android App 通过 `AionImageSaver` 原生桥接写入相册）
 407. **前端指令过滤** — 流式输出时前端实时 strip `[SELFIE:xxx]` 和 `[DRAW:xxx]`，用户看不到原始指令
 408. **TTS 过滤** — TTS 合成时自动剥除 `[SELFIE:...]` 和 `[DRAW:...]` 内容，不会被语音朗读
@@ -421,19 +426,20 @@
   → asyncio.create_task(_do_image_gen(...))
 
 【异步生图（_do_image_gen）】
-  ├ SELFIE 模式：读取 public/生图锚点.jpg → base64 编码 → 作为 inlineData 附加到请求
-  ├ DRAW 模式：仅发送文本 prompt
-  → POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-image:generateContent
-    requestBody: { contents: [{parts: [...]}], generationConfig: {responseModalities: ["IMAGE", "TEXT"]} }
-  → 解析 response → 提取 inlineData（base64 图片数据）
-  → 保存到 data/uploads/img_gen_{timestamp}.{ext}
+  → generate_chat_image 解析 characters= 出场人物并读取共用锚点
+  ├ 有出场人物：逐张带上名字、照片和固定外貌
+  ├ 旧 SELFIE：优先匹配发言者，无绑定时使用原自拍照片
+  ├ 无出场人物：仅发送场景描述
+  → generate_image 调用所选生图来源（Codex / 兼容 API / Gemini）
+  → 解析返回图片 → 保存到统一相册
   → 创建 assistant 消息（附带图片附件 URL）
   → WebSocket 广播 msg_created + image_gen_done
   → 前端移除指示器 + 渲染新消息（含图片）
 
 【生图失败】
   → WebSocket 广播 image_gen_failed
-  → 前端移除指示器
+  → 前端移除指示器并提示失败；群聊对超时、空结果及锚点失效均回填说明
+  → Codex 超时保留 TimeoutError 到系统日志，避免丢失为笼统的“模型未返回结果”
 
 【图片保存（全屏查看器）】
   点击图片 → 全屏 lightbox
@@ -2062,7 +2068,7 @@ python main.py
 535. **牌桌体验** — 支持新局先看牌确认、重新发牌、随机 Aion/Connor 座次、洗牌延迟、出牌/炸弹/胜负/轮到你/换人音效、AI `speech` 单独接入现有 TTS
 536. **移动端牌桌布局** — 手机端做独立布局：AI 座位上移、底牌缩小贴近用户手牌区、用户手牌压叠排列、已出牌暗色弃牌堆、结算弹窗
 537. **群聊战报** — 结算窗提供「继续玩」和「昭告天下」；昭告天下会把本局赢家、地主、剩余手牌、钱包结算等写入最新群聊，并触发群聊 AI 后续回应
-538. **钱包结算** — 斗地主按阵营结算虚拟货币：地主赢则两个农民按剩牌扣款给地主；农民赢则地主按剩牌扣款并均分给两个农民。用户金额只展示，不写入钱包；Aion/Connor 金额写入各自 `bookkeeping` 钱包记录
+538. **钱包结算** — 斗地主按阵营结算虚拟货币：地主赢则两个农民按剩牌扣款给地主；农民赢则地主按剩牌扣款并均分给两个农民。全场每成功打出一次炸弹或王炸，整局金额乘 2（一次 2 倍、两次 4 倍，依次累乘；四带二不计），新局恢复 1 倍。牌桌、结算弹窗和群聊战报展示倍数。用户金额只展示，不写入钱包；Aion/Connor 金额写入各自 `bookkeeping` 钱包记录
 
 ## AI 好友 / 串门
 

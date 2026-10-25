@@ -430,7 +430,7 @@ public class AionAccessibilityService extends AccessibilityService {
             return serverHttpBase;
         }
         SharedPreferences prefs = getSharedPreferences("aion_prefs", MODE_PRIVATE);
-        String saved = prefs.getString("saved_url", "http://192.168.1.100:8080/chat");
+        String saved = prefs.getString("saved_url", "http://192.168.1.92:8080/chat");
         return saved.replace("ws://", "http://")
                 .replace("wss://", "https://")
                 .replace("/ws", "")

@@ -145,3 +145,24 @@ class MemoryLibraryTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(mem_id, [m['id'] for m in self.client.get(url+'?kind=long_term').json()['items']])
             self.assertEqual(self.client.put(url+'/'+mem_id, json={'content':'约定保留','memory_kind':'long_term'}).status_code, 200)
             self.assertEqual(self.client.get(url+'?kind=friend').json()['total'], 0)
+
+    async def test_unresolved_view_and_category_find_old_records_in_both_stores(self):
+        async with self.connect() as db:
+            for table in ('memories', 'chatroom_memories'):
+                await db.execute(f"UPDATE {table} SET unresolved=1 WHERE id IN ('one','summary')")
+            await db.execute("UPDATE chatroom_memories SET unresolved=1 WHERE id='other'")
+            await db.commit()
+        for store in ('main', 'chatroom'):
+            url = f'/api/memory-library/{store}'
+            for query in ('view=unresolved', 'kind=unresolved'):
+                response = self.client.get(url + '?' + query)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual({m['id'] for m in response.json()['items']}, {'one', 'summary'})
+                page = self.client.get(url + '?' + query + '&q=花市&limit=1&page=2').json()
+                self.assertEqual((page['total'], page['page'], len(page['items'])), (2, 2, 1))
+            self.assertEqual(self.client.get(url + '?view=unresolved&kind=friend').json()['total'], 0)
+            response = self.client.put(url + '/one', json={'content':'花市','memory_kind':'daily','unresolved':False})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual([m['id'] for m in self.client.get(url + '?view=unresolved').json()['items']], ['summary'])
+            item = self.client.get(url + '/one').json()['item']
+            self.assertEqual((item['archive_state'], item['source_msg_id']), ('cold', '["private:m"]'))

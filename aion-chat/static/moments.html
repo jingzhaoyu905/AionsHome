@@ -235,6 +235,8 @@
 .load-more-btn:hover { background:var(--border); }
 .moments-stats { text-align:center; font-size:12px; color:var(--text3); padding:8px 0; }
 </style>
+<link rel="stylesheet" href="/static/image-viewer.css?v=20261024">
+<script src="/static/image-viewer.js?v=20261024"></script>
 </head>
 <body>
 <div class="sub-page">
@@ -445,12 +447,12 @@ function renderMomentImages(atts) {
   if (!urls.length) return '';
   const cls = urls.length === 1 ? 'moment-images one' : 'moment-images';
   return `<div class="${cls}">` + urls.map(url =>
-    `<img src="${escapeHtml(url)}" alt="配图" loading="lazy" onclick="openMomentImage('${escapeHtml(url)}')">`
+    `<img src="${escapeHtml(url)}" alt="配图" loading="lazy" onclick="AionImageViewer.openFromElement(this)">`
   ).join('') + '</div>';
 }
 
 function openMomentImage(url) {
-  window.open(url, '_blank');
+  AionImageViewer.open(url);
 }
 
 function renderPublishPreview() {

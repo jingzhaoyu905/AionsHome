@@ -19,6 +19,7 @@ import java.util.Set;
 
 /** Plays TTS without claiming Android audio focus, allowing other apps to keep playing. */
 public final class TtsAudioBridge {
+    private static final String MONITOR_ALERT_ID = "tts-monitor-alert";
     private final Context context;
     private final WebView webView;
     private final Map<String, MediaPlayer> players = new HashMap<>();
@@ -27,10 +28,26 @@ public final class TtsAudioBridge {
     private final Map<String, Runnable> progressCallbacks = new HashMap<>();
     private final Map<String, Object> playbackOwners = new HashMap<>();
     private final Set<String> speechSessions = new HashSet<>();
+    private volatile boolean foreground = true;
 
     public TtsAudioBridge(Context context, WebView webView) {
         this.context = context.getApplicationContext();
         this.webView = webView;
+    }
+
+    @JavascriptInterface
+    public boolean isForeground() { return foreground; }
+
+    /** Called on the activity thread, before the WebView can be suspended. */
+    public void setForeground(boolean active) {
+        foreground = active;
+        if (active) return;
+        // Let a playing clip finish, but never reserve silence for a JS callback
+        // that Android may postpone until the user opens the app again.
+        speechSessions.clear();
+        for (String id : new HashSet<>(playbackOwners.keySet())) {
+            if (!players.containsKey(id)) releasePlaybackOwner(id);
+        }
     }
 
     @JavascriptInterface
@@ -64,7 +81,9 @@ public final class TtsAudioBridge {
 
     @JavascriptInterface
     public void beginSpeech(String playerId) {
-        if (validPlayerId(playerId)) webView.post(() -> speechSessions.add(playerId));
+        if (validPlayerId(playerId)) webView.post(() -> {
+            if (foreground) speechSessions.add(playerId);
+        });
     }
 
     @JavascriptInterface
@@ -77,10 +96,19 @@ public final class TtsAudioBridge {
     }
 
     @JavascriptInterface
+    public boolean playMonitorAlert() {
+        // AionPushService owns monitor cues in both foreground and background.
+        // A delayed WebView callback must never replay an already handled cue.
+        return true;
+    }
+
+    @JavascriptInterface
     public boolean play(String playerId, String playbackUrl) {
         if (!validPlayerId(playerId) || playbackUrl == null || playbackUrl.trim().isEmpty()) {
             return false;
         }
+        // Older cached pages still use the generic entry point for this cue.
+        if (MONITOR_ALERT_ID.equals(playerId)) return playMonitorAlert();
         webView.post(() -> startOnMainThread(playerId, playbackUrl, true));
         return true;
     }
@@ -189,7 +217,6 @@ public final class TtsAudioBridge {
             if (cookie != null && !cookie.isEmpty()) headers.put("Cookie", cookie);
             String userAgent = webView.getSettings().getUserAgentString();
             if (userAgent != null && !userAgent.isEmpty()) headers.put("User-Agent", userAgent);
-
             player.setDataSource(context, Uri.parse(resolvedUrl), headers);
             player.setOnPreparedListener(prepared -> {
                 if (players.get(playerId) != prepared) {

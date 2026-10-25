@@ -172,7 +172,7 @@
     } else {
       $('tableCaption').innerHTML = state.phase === 'cancelled' ? '本场已结束' : `${over ? '本手底池' : streets[state.street]} · <span class="pot-amount">${amount(state.pot)}</span>${state.wallet ? '' : ' 筹码'}`;
       $('centerpiece').innerHTML = `<div class="cards-row">${Array.from({length:5}, (_, i) => card(state.board[i], true)).join('')}</div>`;
-      $('tableHint').textContent = state.phase === 'cancelled' ? '未完成的这一手作废 · 不同步到群聊' : over ? (state.wallet?.status === 'open' ? '本手金额已结算在桌上 · 收桌时退回钱包' : '本手已结算') : '';
+      $('tableHint').textContent = state.phase === 'cancelled' ? (state.rounds?.length ? '已完成的输赢保留 · 收桌总结将同步到最近聊天的群' : '尚未完成一手 · 不生成群总结') : over ? (state.wallet?.status === 'open' ? '本手金额已结算在桌上 · 收桌时退回钱包' : '本手已结算') : '';
     }
     if (over) {
       renderResult();
@@ -188,7 +188,8 @@
   function renderResult() {
     $('status').textContent = state.closed ? (state.end_reason || '已收桌') + (state.wallet ? ' · 余额已退回' : ' · 练习结束') : state.phase === 'game_over' ? `${name(state.winner)} 赢下了这局。` : diceGame ? '这一轮，真相揭晓。' : '这一手，金额落定。';
     if (state.phase === 'cancelled') {
-      $('actionArea').innerHTML = `<div class="settlement"><p>已完成的输赢保留，未完成的这一轮作废。<br>本场不会同步到群聊。</p><div class="action-row">${button('重新开局', 'settings', 'primary')}${button('本场明细', 'summary')}</div></div>`;
+      const reportHint = diceGame ? '本场不会同步到群聊。' : state.rounds?.length ? '收桌总结将同步到最近聊天的群。' : '尚未完成一手，不生成群总结。';
+      $('actionArea').innerHTML = `<div class="settlement"><p>已完成的输赢保留，未完成的这一轮作废。<br>${reportHint}</p><div class="action-row">${button('重新开局', 'settings', 'primary')}${button('本场明细', 'summary')}</div></div>`;
       return;
     }
     let text;
@@ -235,7 +236,7 @@
     if (!state) return;
     $('summaryTitle').textContent = `${title} · 本场${state.closed || state.phase === 'game_over' ? '结算' : '明细'}`;
     const completion = state.end_reason || ((state.rounds || []).length ? `已记录 ${state.rounds.length} ${diceGame ? '轮' : '手'}` : '尚未完成一轮');
-    $('summaryNote').textContent = `${completion}。${state.wallet ? state.wallet.status === 'open' ? '金额仍在桌上，收桌后退回钱包。' : '剩余金额已退回各自钱包；你的金额只记本桌。' : '免费练习，不变动钱包。'}`;
+    $('summaryNote').textContent = `${completion}。${state.wallet ? state.wallet.status === 'open' ? '金额仍在桌上，收桌后退回钱包。' : '结算金额已从钱包自动扣除' : '免费练习，不变动钱包。'}`;
     const initial = state.wallet?.initial || state.starting_stacks;
     $('summaryTotals').style.setProperty('--players', state.players.length);
     $('summaryTotals').innerHTML = state.players.map(p => {
@@ -337,7 +338,8 @@
   $('settingsClose').onclick = () => $('setup').close();
   $('summaryClose').onclick = () => $('summaryDialog').close();
   $('cashout').onclick = () => {
-    if (confirm('结束本场？已完成的输赢保留，未完成的这一轮作废并退回下注，不发群总结。')) command('/cashout');
+    const reportHint = diceGame ? '不发群总结。' : state.rounds?.length ? '收桌总结将同步到最近聊天的群。' : '尚未完成一手，不生成群总结。';
+    if (confirm('结束本场？已完成的输赢保留，未完成的这一轮作废并退回下注。' + reportHint)) command('/cashout');
   };
   $('rulesToggle').onclick = () => $('rulesDialog').showModal();
   $('rulesClose').onclick = () => $('rulesDialog').close();

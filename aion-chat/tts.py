@@ -71,6 +71,9 @@ def cleanup_tts_cache_dir(cache_dir: Path = TTS_CACHE_DIR, max_bytes: int = TTS_
     files = []
     total = 0
     for path in cache_dir.glob("*.mp3"):
+        # Legacy directed recordings remain protected until/after archival.
+        if path.stem.endswith('_expressive'):
+            continue
         try:
             resolved = path.resolve()
             stat = path.stat()

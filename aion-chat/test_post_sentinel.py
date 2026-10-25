@@ -50,6 +50,38 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
         return {'updates': [{'key': 'communication.reminders', 'category': 'recent', 'reason': '近期变化有后续价值',
                              'content': content, 'sources': [source]}], 'state': None}
 
+    async def test_resolved_budget_warning_disappears_without_erasing_failed_job(self):
+        warning = '近期清单超过约2000 tokens或24项，请先合并同一事项、精简正文；未完成待办不能省略'
+        await self.service.enqueue_event(await self.message())
+        async with self.connect() as db:
+            await db.execute("UPDATE post_sentinel_jobs SET status='failed',error=?", ('状态：' + warning,))
+            await db.commit()
+        data = await self.service.snapshot()
+        self.assertEqual(data['last_error'], '')
+        self.assertEqual(data['failed'], 1)
+        async with self.connect() as db:
+            error = (await (await db.execute('SELECT error FROM post_sentinel_jobs')).fetchone())[0]
+        self.assertEqual(error, '状态：' + warning)
+
+    async def test_budget_warning_tracks_current_capacity_and_preserves_other_errors(self):
+        warning = '近期清单超过约2000 tokens或24项，请先合并同一事项、精简正文；未完成待办不能省略'
+        document = {'entries': {str(i): {'key': str(i), 'category': 'recent', 'kind': 'task',
+                     'content': '待处理', 'source_ts': time.time()} for i in range(25)}}
+        async with self.connect() as db:
+            await db.execute('UPDATE post_sentinel_document SET payload=?,last_error=?',
+                             (json.dumps(document), '画像：' + warning + '；网络连接失败'))
+            await db.execute("INSERT INTO post_sentinel_digest_jobs VALUES ('batch','{}','pending',?,0)",
+                             (warning,))
+            await db.commit()
+        # Even with the feature disabled, capacity is measured from the saved document.
+        with patch.object(self.service, 'enabled', return_value=False):
+            self.assertIn(warning, (await self.service.snapshot())['last_error'])
+        document['entries'] = {}
+        async with self.connect() as db:
+            await db.execute('UPDATE post_sentinel_document SET payload=?', (json.dumps(document),))
+            await db.commit()
+        self.assertEqual((await self.service.snapshot())['last_error'], '网络连接失败')
+
     async def test_profile_subject_uses_configured_name_for_facts_and_activity(self):
         for name in ('小星', 'Mira'):
             with self.subTest(name=name), patch.object(self.service, 'load_worldbook', return_value={'user_name': name}):

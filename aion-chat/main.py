@@ -158,6 +158,8 @@ async def _auto_digest_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    from expressive_voice import archive_legacy_audio
+    await asyncio.to_thread(archive_legacy_audio)
     try:
         await post_sentinel.start()
     except Exception:

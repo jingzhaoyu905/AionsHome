@@ -9,6 +9,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#050923">
+<link rel="stylesheet" href="/static/image-anchors.css?v=20261022">
 <style>
 :root {
   --bg: #050923;
@@ -262,6 +263,8 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
 }
 </style>
 <link rel="stylesheet" href="/static/theater-studio.css?v=paragraph-indent-1_5em-20261018">
+<link rel="stylesheet" href="/static/image-viewer.css?v=20261024">
+<script src="/static/image-viewer.js?v=20261024"></script>
 </head>
 <body class="theater-page studio-shell" data-theme="dark">
 <div class="app">
@@ -834,7 +837,7 @@ function renderMessages() {
           if (a.match(/\.(mp4|webm|mov)$/i)) {
             attHtml += `<video src="${a}" controls playsinline></video>`;
           } else {
-            attHtml += `<img src="${a}" onclick="window.open('${a}')">`;
+            attHtml += `<img src="${a}" onclick="AionImageViewer.openFromElement(this)">`;
           }
         }
       }
@@ -2008,6 +2011,7 @@ document.addEventListener('DOMContentLoaded', () => {
 }, { once: true });
 </script>
 <script src="/static/theater-follow.js?v=20260917-reading-progress"></script>
-<script src="/static/theater-studio.js?v=20261009-startup"></script>
+<script src="/static/image-anchors.js?v=20261022"></script>
+<script src="/static/theater-studio.js?v=20261024-images"></script>
 </body>
 </html>

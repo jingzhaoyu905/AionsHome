@@ -333,6 +333,8 @@ irm https://antigravity.google/cli/install.ps1 | iex
 
 这只修改 CLI 默认模型。小家选中的 `AGY · 模型名称` 会通过 --model 明确指定模型，不会被全局默认设置覆盖。
 
+**AGY 语音输入**：Gemini 系列自动开启原音频读取，Claude 系列保持关闭、只接收转写文字。私聊和群聊会保留当前语音消息的原文件及转写；浏览器 WebM/MP4 录音按语音附件识别。音频和图片共用当轮临时附件白名单，仅允许 `view_file` 读取，结束后清理。旧模型缓存会在加载时自动修正能力，无需手改 JSON；更新代码后重启小家服务器生效。
+
 ### 精简陪伴配置与账号边界
 
 `aion-chat/prompts/antigravity_companion.md` 使用官方 `excludeDefaultComponents: true`、`inheritCustomizations: false`、`tools: []`，排除大部分默认开发提示与工具，保留应用提供的人设、记忆及文本能力协议。1.2.16 的初始化 tools 仍列出全局工具目录，不能据此判断本次 Agent 的工具集；管线核对 Agent 名称，出现实际原生工具步骤时会终止调用。官方运行时可能保留任务管理组件，因此不承诺完全零工具。同提示、同模型的短回复对照，默认 Agent 输入 12,042 tokens，陪伴配置为 673（约少 94%；实际长对话节省比例随应用上下文而变）。文字通过官方 stdin/stdout 传输；图片走现有哨兵代看，语音走已有转写，尚未启用原生媒体传输。

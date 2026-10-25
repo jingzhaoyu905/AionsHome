@@ -166,8 +166,13 @@ class MessageTests(unittest.IsolatedAsyncioTestCase):
         self.db_patch.start()
         self.cache_patch = patch.object(voice, 'TTS_CACHE_DIR', Path(self.tmp.name))
         self.cache_patch.start()
+        self.keepsakes = Path(self.tmp.name) / 'voice_keepsakes'
+        self.keepsakes.mkdir()
+        self.keepsakes_patch = patch.object(voice, 'EXPRESSIVE_VOICE_DIR', self.keepsakes, create=True)
+        self.keepsakes_patch.start()
 
     async def asyncTearDown(self):
+        self.keepsakes_patch.stop()
         self.cache_patch.stop(); self.db_patch.stop(); self.tmp.cleanup()
 
     async def message(self):
@@ -196,7 +201,8 @@ class MessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event['data']['attachments'][0]['synthesis_text'], synth.await_args.args[0])
         manager.send_tts_event.assert_not_awaited()
         self.assertEqual(event['data']['attachments'][0]['status'], 'ready')
-        self.assertTrue((Path(self.tmp.name)/'fixture_expressive.mp3').exists())
+        self.assertEqual((self.keepsakes / 'fixture_expressive.mp3').read_bytes(), b'mp3')
+        self.assertFalse((Path(self.tmp.name) / 'fixture_expressive.mp3').exists())
 
     async def test_scheduled_wakeup_opts_into_autoplay_without_chat_generation(self):
         event = await self.message(); manager = AsyncMock()
@@ -237,9 +243,36 @@ class MessageTests(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
-        self.assertTrue((Path(self.tmp.name)/'fixture_expressive.mp3').exists())
+        self.assertTrue((self.keepsakes / 'fixture_expressive.mp3').exists())
         self.assertEqual(event['data']['attachments'][0]['status'], 'ready')
         manager.send_tts_event.assert_not_awaited()
+
+    async def test_legacy_audio_is_archived_without_overwriting_keepsakes(self):
+        legacy = Path(self.tmp.name) / 'old_expressive.mp3'
+        legacy.write_bytes(b'old recording')
+        (Path(self.tmp.name) / 'ordinary.mp3').write_bytes(b'ordinary')
+        voice.archive_legacy_audio()
+        self.assertEqual((self.keepsakes / legacy.name).read_bytes(), b'old recording')
+        self.assertFalse((self.keepsakes / 'ordinary.mp3').exists())
+        legacy.write_bytes(b'different')
+        voice.archive_legacy_audio()
+        self.assertEqual((self.keepsakes / legacy.name).read_bytes(), b'old recording')
+
+    async def test_keepsake_replays_at_original_url_after_cache_cleanup(self):
+        from routes import settings
+        saved = self.keepsakes / 'saved_expressive.mp3'
+        saved.write_bytes(b'saved recording')
+        legacy = Path(self.tmp.name) / 'legacy_expressive.mp3'
+        legacy.write_bytes(b'legacy recording')
+        ordinary = Path(self.tmp.name) / 'ordinary.mp3'
+        ordinary.write_bytes(b'ordinary')
+        with patch.object(settings, 'TTS_CACHE_DIR', Path(self.tmp.name)), patch.object(settings, 'EXPRESSIVE_VOICE_DIR', self.keepsakes, create=True):
+            self.assertEqual((await settings.tts_audio('legacy_expressive')).path, legacy)
+            tts.cleanup_tts_cache_dir(Path(self.tmp.name), max_bytes=0)
+            self.assertFalse(ordinary.exists())
+            self.assertTrue(legacy.exists())
+            self.assertEqual((await settings.tts_audio('saved_expressive')).path, saved)
+            self.assertEqual(saved.read_bytes(), b'saved recording')
 
 
 if __name__ == '__main__':

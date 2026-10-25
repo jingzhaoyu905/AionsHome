@@ -59,8 +59,21 @@
 .preview-query{display:flex;gap:8px;margin:8px 0}
 .preview-query input{min-width:0;flex:1;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)}
 .profile-group+.profile-group{margin-top:20px}
-.profile-archive{margin:10px 0;color:var(--text3);font-size:12px}
-.profile-archive summary{cursor:pointer;margin-bottom:6px}
+.profile-current{margin-top:14px;padding:14px;border:1px solid var(--accent);border-left-width:4px;border-radius:10px;background:var(--surface)}
+.profile-list-heading{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.profile-list-heading h4,.profile-archive-title{margin:0;font-size:15px;font-weight:600;line-height:1.5}
+.profile-current .profile-list-heading h4{color:var(--accent)}
+.profile-count{padding:2px 8px;border:1px solid var(--border);border-radius:999px;font-size:11px;font-weight:500;color:var(--text2);white-space:nowrap}
+.profile-list-note{display:block;margin:5px 0 0;color:var(--text2);font-size:12px;line-height:1.7}
+.profile-archive{margin:24px 0 0;border:1px solid var(--border);border-radius:10px;background:var(--surface2);color:var(--text2)}
+.profile-archive>summary{position:relative;padding:14px 36px 14px 14px;cursor:pointer;list-style:none}
+.profile-archive>summary::-webkit-details-marker{display:none}
+.profile-archive>summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:10px}
+.profile-archive-toggle{position:absolute;right:16px;top:22px;width:7px;height:7px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg)}
+.profile-archive[open]>summary .profile-archive-toggle{transform:rotate(225deg);top:26px}
+.profile-archive[open]>summary{border-bottom:1px solid var(--border)}
+.profile-archive-body{padding:0 14px 10px}
+.profile-archive .entry-copy p{color:var(--text2)}
 [hidden]{display:none!important}
 @media(max-width:560px){.profile-page .page-content{padding-left:12px;padding-right:12px}.profile-overview,.profile-state,.profile-section{padding:12px 14px}.state-fields{grid-template-columns:1fr}.section-heading{align-items:center}.profile-savebar{margin:0 12px calc(8px + env(safe-area-inset-bottom));flex-wrap:wrap}.profile-savebar span{flex-basis:100%}.profile-savebar .save-button{flex:1}.profile-entry{gap:8px}}
 

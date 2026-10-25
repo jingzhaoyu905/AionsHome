@@ -177,21 +177,27 @@ async def _consume_safe_chatroom_stream(
     chunk_type: str,
     model_key: str = "",
     tts_streamer: TTSStreamer | None = None,
+    read_private_whispers: bool = False,
 ) -> tuple[StreamSafetyResult, str]:
     visible_text = ""
     stream_filter = WebCommandStreamFilter()
     lounge_filter = LoungeVisitCommandStreamFilter()
+    display_filter = KnownCommandStreamFilter()
 
     async def on_commit(chunk: str) -> None:
         nonlocal visible_text
-        visible = lounge_filter.feed(stream_filter.feed(chunk))
+        speech = lounge_filter.feed(stream_filter.feed(chunk))
+        visible = display_filter.feed(speech) if read_private_whispers else speech
         if visible:
             visible_text += visible
             await queue.put({"type": chunk_type, "content": visible})
-            if tts_streamer:
-                await tts_streamer.feed_async(visible)
+        if tts_streamer:
+            await tts_streamer.feed_async(PRIVATE_WHISPER_CMD_PATTERN.sub(r"\1", speech))
 
-    result = await consume_safe_live_stream(source, on_commit, idle_timeout=model_chat_idle_timeout(model_key))
+    result = await consume_safe_live_stream(
+        source, on_commit, idle_timeout=model_chat_idle_timeout(model_key),
+        preserve_private_whispers=read_private_whispers and tts_streamer is not None,
+    )
     if result.stop_reason is None:
         visible_tail = lounge_filter.feed(stream_filter.flush()) + lounge_filter.flush()
         if visible_tail:
@@ -210,6 +216,7 @@ async def _consume_chatroom_realtime_stream(
     model_key: str = "",
     tts_streamer: TTSStreamer | None = None,
     transport_mode: str | None = None,
+    read_private_whispers: bool = False,
 ):
     mode = transport_mode or resolve_model_transport_mode(model_key)
     failed_prefix = ""
@@ -237,6 +244,7 @@ async def _consume_chatroom_realtime_stream(
             chunk_type=chunk_type,
             model_key=model_key,
             tts_streamer=tts_streamer,
+            read_private_whispers=read_private_whispers,
         )
         if result.stop_reason:
             failed_prefix = visible
@@ -468,11 +476,11 @@ def _chatroom_auto_tts_voice(sender: str) -> str:
 # ══════════════════════════════════════════════════
 
 def _process_voice_attachments(history: list):
-    """处理上下文中的语音附件：转写文本注入 content，最后一条用户消息保留音频 URL，其余移除。"""
-    # 只允许最新一条 user 消息保留附件；不能重复发送更早的语音。
+    """转写注入 content；最近一次真人发言的音频保留至下一次真人发言。"""
+    # 群聊时间线把 AI 发言也包装成 user；一轮中的另一位 AI 回复不能消耗音频。
     keep_idx = -1
     for i in range(len(history) - 1, -1, -1):
-        if history[i].get("role") == "user":
+        if history[i].get("_timeline_sender", history[i].get("role")) == "user":
             keep_idx = i
             break
 
@@ -489,7 +497,7 @@ def _process_voice_attachments(history: list):
                 if transcript:
                     media_transcripts.append(f"[语音消息] {transcript}")
                 if is_kept:
-                    non_media_atts.append(att.get("url", ""))
+                    non_media_atts.append(att)  # Preserve voice type for WebM/MP4 audio containers.
             elif isinstance(att, dict) and att.get("type") == "video_clip":
                 transcript = att.get("transcript", "")
                 if transcript:
@@ -729,6 +737,7 @@ async def _send_aion_private_whisper(content: str):
 
     msg = {"id": msg_id, "conv_id": conv_id, "role": "assistant", "content": content, "created_at": now, "attachments": []}
     await broadcast_synced(manager, {"type": "msg_created", "data": msg})
+    return {"target_type": "conversation", "target_id": conv_id}
 
 
 async def _get_or_create_connor_private_room() -> str:
@@ -768,14 +777,16 @@ async def _send_connor_private_whisper(content: str):
         return
 
     private_room_id = await _get_or_create_connor_private_room()
-    await _save_msg(private_room_id, "connor", content, msg_id=f"cm_{time.time_ns()}_w")
+    # The originating group reply owns playback, preserving its text order.
+    await _save_msg(private_room_id, "connor", content, msg_id=f"cm_{time.time_ns()}_w", auto_tts=False)
+    return {"target_type": "room", "target_id": private_room_id}
 
 
 async def _send_private_whisper(who_identity: str, content: str):
     if who_identity == "connor":
-        await _send_connor_private_whisper(content)
+        return await _send_connor_private_whisper(content)
     else:
-        await _send_aion_private_whisper(content)
+        return await _send_aion_private_whisper(content)
 
 
 async def _process_chatroom_commands(
@@ -838,8 +849,12 @@ async def _process_chatroom_commands(
         full_text = PRIVATE_WHISPER_CMD_PATTERN.sub("", full_text)
         if await _get_room_type(room_id) == "group":
             for whisper_text in private_whispers:
+                if not whisper_text.strip():
+                    continue
                 try:
-                    await _send_private_whisper(who_identity, whisper_text)
+                    target = await _send_private_whisper(who_identity, whisper_text)
+                    triggered["private_whisper_count"] = triggered.get("private_whisper_count", 0) + 1
+                    triggered["private_whisper_target"] = target
                     print(f"[CHATROOM_WHISPER] {who_label} -> private: {whisper_text[:80]}")
                 except Exception as e:
                     print(f"[CHATROOM_WHISPER] 发送失败: {e}")
@@ -1305,6 +1320,13 @@ def _toy_attachments_from_triggered(triggered: dict) -> list[dict]:
     return [{"type": "toy", "commands": commands}]
 
 
+def _private_whisper_attachments(triggered: dict) -> list[dict]:
+    count = triggered.get("private_whisper_count", 0)
+    # UI receipt only; no private content or display text enters model history.
+    target = triggered.get("private_whisper_target") or {}
+    return [{"type": "private_whisper_sent", "count": count, **target}] if count else []
+
+
 def _music_attachments_from_triggered(triggered: dict) -> list[dict]:
     cards = triggered.get("music_cards") or []
     if not cards:
@@ -1465,11 +1487,9 @@ async def _chatroom_cam_check(
 
     prefix_msgs = []
     if wb.get("ai_persona") and sender == "aion":
-        prefix_msgs.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix_msgs.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix_msgs.append({"role": "system", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
     if wb.get("user_persona"):
-        prefix_msgs.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
-        prefix_msgs.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
+        prefix_msgs.append({"role": "system", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
 
     cam_message = {"role": "user", "content": cam_prompt}
     if fname:
@@ -1543,11 +1563,9 @@ async def _chatroom_activity_check(room_id: str, sender: str, model_key: str, n:
     # 构建 prompt
     prefix_msgs = []
     if wb.get("ai_persona") and sender == "aion":
-        prefix_msgs.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix_msgs.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix_msgs.append({"role": "system", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
     if wb.get("user_persona"):
-        prefix_msgs.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
-        prefix_msgs.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
+        prefix_msgs.append({"role": "system", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
 
     messages = prefix_msgs + recent + [{"role": "user", "content": activity_prompt}]
 
@@ -1665,8 +1683,7 @@ async def _chatroom_poi_check(room_id: str, sender: str, model_key: str, categor
 
     prefix_msgs = []
     if wb.get("ai_persona") and sender == "aion":
-        prefix_msgs.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix_msgs.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix_msgs.append({"role": "system", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
 
     messages = prefix_msgs + recent + [{"role": "user", "content": poi_prompt}]
 
@@ -1744,11 +1761,9 @@ async def _chatroom_web_search(room_id: str, sender: str, model_key: str, payloa
                 "content": connor_persona,
             })
     if wb.get("ai_persona") and sender == "aion":
-        prefix_msgs.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix_msgs.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix_msgs.append({"role": "system", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
     if wb.get("user_persona"):
-        prefix_msgs.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
-        prefix_msgs.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
+        prefix_msgs.append({"role": "system", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
 
     web_prompt = (
         f"{sender_label}刚才为了回答{user_name}发起了联网搜索或网页读取，系统已经完成。以下是结果：\n\n"
@@ -1831,13 +1846,11 @@ async def _chatroom_memory_search(room_id: str, sender: str, model_key: str, pay
             prefix_msgs.append({"role": "system", "content": connor_persona})
     elif wb.get("ai_persona"):
         prefix_msgs.extend([
-            {"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"},
-            {"role": "assistant", "content": "收到，我会按照设定扮演角色。"},
+            {"role": "system", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"},
         ])
     if wb.get("user_persona"):
         prefix_msgs.extend([
-            {"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"},
-            {"role": "assistant", "content": "收到，我会记住你的信息。"},
+            {"role": "system", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"},
         ])
     ability_block = await build_ability_block(
         user_name,
@@ -1915,17 +1928,23 @@ async def _chatroom_memory_search(room_id: str, sender: str, model_key: str, pay
 
 async def _chatroom_image_gen(room_id: str, sender: str, prompt: str, is_selfie: bool):
     """聊天室版图片生成"""
-    from image_gen import generate_image
+    from image_gen import generate_chat_image
 
     try:
-        filename = await generate_image(prompt, is_selfie=is_selfie, source_identity=sender)
+        filename = await generate_chat_image(prompt, is_selfie=is_selfie, source_identity=sender)
         if filename:
             await _save_msg(room_id, sender, "", attachments=[f"/uploads/{filename}"])
             print(f"[CHATROOM_IMG_GEN] {sender} 生图完成, room={room_id}")
         else:
             print(f"[CHATROOM_IMG_GEN] {sender} 生图失败, room={room_id}")
+            await _save_msg(room_id, sender, '图片没有生成：生图服务没有返回图片，请稍后再试。')
+    except TimeoutError:
+        await _save_msg(room_id, sender, '图片生成超时，这次没有收到图片，请稍后再试。')
+    except ValueError as e:
+        await _save_msg(room_id, sender, f"图片没有生成：{e}。可以在设置的「管理人物锚点」中检查。")
     except Exception as e:
         print(f"[CHATROOM_IMG_GEN] {sender} 生图异常: {e}")
+        await _save_msg(room_id, sender, '图片生成失败，请稍后再试；具体原因已记录到系统日志。')
 
 
 # ── 图片 URL 检测 & 下载保存 ──
@@ -4069,6 +4088,7 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
         model_key=model_key,
         tts_streamer=live_tts,
         transport_mode=transport_mode,
+        read_private_whispers=True,
     )
     if transport_outcome.manual_retry_required or transport_outcome.result.stop_reason:
         await _save_chatroom_reply_failure(
@@ -4116,12 +4136,14 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
         return digest_out
 
     # 合成与消息落库并行；正式排版不等待语音供应商。
+    tts_text = (_visible_chatroom_text(PRIVATE_WHISPER_CMD_PATTERN.sub(r"\1", full_text))
+                if PRIVATE_WHISPER_CMD_PATTERN.search(full_text) else clean_text)
     tts_flush_task = None
-    if tts_enabled and tts_voice and clean_text and tts_from_model:
+    if tts_enabled and tts_voice and tts_text and tts_from_model:
         if live_tts is None:
             live_tts = TTSStreamer(aion_msg_id, tts_voice, manager, sse_queue=_q)
         if transport_outcome.used_fallback or transport_mode != "safe_live":
-            live_tts.feed(clean_text)
+            live_tts.feed(tts_text)
         tts_flush_task = spawn_generation_task(live_tts.flush())
 
     if safety_notice:
@@ -4130,8 +4152,8 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
     saved_imgs = await _extract_and_save_images(clean_text)
     aion_msg = await _save_msg(
         room_id, "aion", clean_text, aion_msg_id,
-        attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered) + _toy_attachments_from_triggered(triggered),
-        auto_tts=not safety_notice and tts_from_model and not (tts_enabled and tts_voice and clean_text),
+        attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered) + _toy_attachments_from_triggered(triggered) + _private_whisper_attachments(triggered),
+        auto_tts=not PRIVATE_WHISPER_CMD_PATTERN.search(full_text) and not safety_notice and tts_from_model and not (tts_enabled and tts_voice and clean_text),
         reasoning_content=usage_meta.get("reasoning_content", "").strip(),
     )
     await _q.put({"type": "aion_done", "message": aion_msg})
@@ -4207,6 +4229,7 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
         model_key=_resolve_connor_model(connor_model_key),
         tts_streamer=live_tts,
         transport_mode=transport_mode,
+        read_private_whispers=True,
     )
     if transport_outcome.manual_retry_required or transport_outcome.result.stop_reason:
         await _save_chatroom_reply_failure(
@@ -4257,8 +4280,10 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
         return digest_out
 
     # 合成与消息落库并行；正式排版不等待语音供应商。
+    tts_text = (_visible_chatroom_text(PRIVATE_WHISPER_CMD_PATTERN.sub(r"\1", full_text))
+                if PRIVATE_WHISPER_CMD_PATTERN.search(full_text) else clean_text)
     tts_flush_task = None
-    if tts_enabled and tts_voice and clean_text and tts_from_model:
+    if tts_enabled and tts_voice and tts_text and tts_from_model:
         if live_tts is None:
             live_tts = TTSStreamer(
                 connor_msg_id,
@@ -4267,7 +4292,7 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
                 sse_queue=_q,
             )
         if transport_outcome.used_fallback or transport_mode != "safe_live":
-            live_tts.feed(clean_text)
+            live_tts.feed(tts_text)
         tts_flush_task = spawn_generation_task(live_tts.flush())
 
     if safety_notice:
@@ -4276,8 +4301,8 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
     saved_imgs = await _extract_and_save_images(clean_text)
     connor_msg = await _save_msg(
         room_id, "connor", clean_text, connor_msg_id,
-        attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered) + _toy_attachments_from_triggered(triggered),
-        auto_tts=not safety_notice and tts_from_model and not (tts_enabled and tts_voice and clean_text),
+        attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered) + _toy_attachments_from_triggered(triggered) + _private_whisper_attachments(triggered),
+        auto_tts=not PRIVATE_WHISPER_CMD_PATTERN.search(full_text) and not safety_notice and tts_from_model and not (tts_enabled and tts_voice and clean_text),
         reasoning_content=usage_meta.get("reasoning_content", "").strip(),
     )
     await _q.put({"type": "connor_done", "message": connor_msg})

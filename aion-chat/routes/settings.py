@@ -14,6 +14,7 @@ import httpx
 
 from config import SETTINGS, save_settings, get_key, get_sentinel_config, load_worldbook, save_worldbook, load_chat_status, TTS_CACHE_DIR, TTS_CACHE_MAX_BYTES, THEATER_TTS_CACHE_DIR, normalize_custom_model_routes, normalize_model_transport_modes, normalize_sentinel_route, refresh_custom_models, iter_visible_models, resolve_model_transport_mode, model_supports_safe_live
 from tts import cleanup_tts_cache_dir, _request_tts_audio, EDGE_VOICES, MINIMAX_TTS_MODELS, MINIMAX_VOICE_PREFIX
+from config import EXPRESSIVE_VOICE_DIR
 from ws import manager
 import elevenlabs_tts
 import antigravity_cli
@@ -32,7 +33,7 @@ async def list_models():
         replace_antigravity_models({
             f"AGY · {item['name']}": {
                 "provider": "antigravity_cli", "model": item["model"],
-                "audio": False,  # config 根据官方模型系列补齐 vision 能力。
+                # config 根据官方模型系列补齐 vision / audio 能力。
             }
             for item in catalog
         }, persist=True)
@@ -582,6 +583,10 @@ async def tts_audio(msg_id: str):
     if not safe_id:
         return Response(status_code=404)
     cache_path = TTS_CACHE_DIR / f"{safe_id}.mp3"
+    if safe_id.endswith('_expressive'):
+        saved_path = EXPRESSIVE_VOICE_DIR / f"{safe_id}.mp3"
+        if saved_path.exists():
+            cache_path = saved_path
     if not cache_path.exists():
         return Response(status_code=404)
     return FileResponse(cache_path, media_type="audio/mpeg", filename=f"{safe_id}.mp3")

@@ -138,6 +138,38 @@ class TableApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(poker['wallet']['initial'], {'user': 20000, 'aion': 20000, 'connor': 20000})
         self.assertEqual(poker['blind'], 1000)
 
+    async def test_early_poker_report_excludes_unfinished_hand_and_can_retry(self):
+        import tabletop_wallet as money
+        target = {'type': 'chatroom', 'id': 'latest-group'}
+        with patch.object(self.api, 'last_active_group', AsyncMock(return_value=target)):
+            state = money.open_table(self.api.DB_PATH, 'texas-holdem', ['user', 'aion'], True, 0)
+            await self.api.cashout('texas-holdem', self.turn(state))
+            self.assertEqual(money.pending_reports(self.api.DB_PATH), [])
+
+            state = money.open_table(self.api.DB_PATH, 'texas-holdem', ['user', 'aion'], True, 0)
+            game.act(state, state['turn'], {'action': 'fold'})
+            completed_stacks = state['stacks'].copy()
+            game.next_round(state)
+            money.save(self.api.DB_PATH, state)
+            await self.api.cashout('texas-holdem', self.turn(state))
+            closed = money.load(self.api.DB_PATH, 'texas-holdem')
+            self.assertEqual(closed['stacks'], completed_stacks)
+            reports = money.pending_reports(self.api.DB_PATH)
+            self.assertEqual(len(reports), 1)
+            self.assertEqual(reports[0]['target'], target)
+            self.assertEqual(len(reports[0]['state']['rounds']), 1)
+            await self.api._commit(money.load(self.api.DB_PATH, 'texas-holdem'))
+            with patch.object(self.api, 'save_chat_card', AsyncMock(return_value=False)) as send:
+                await self.api._flush_reports()
+                self.assertEqual(len(money.pending_reports(self.api.DB_PATH)), 1)
+                self.assertIn('共完成 1 手', send.call_args.args[1])
+                self.assertEqual(send.call_args.args[2][0]['rounds_completed'], 1)
+            with patch.object(self.api, 'save_chat_card', AsyncMock(return_value=True)) as send:
+                await self.api._flush_reports()
+                await self.api._flush_reports()
+                send.assert_awaited_once()
+            self.assertEqual(money.pending_reports(self.api.DB_PATH), [])
+
     async def user_bid(self):
         result = await self.api.user_action('liars-dice', self.turn(action='bid', count=1, face=2))
         self.state = result['state']
@@ -425,22 +457,28 @@ class TableReportTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('共完成 3 轮', cards[0][0])
             self.assertEqual(json.loads(cards[0][1])[0]['type'], 'table_game_result')
             self.assertEqual(db.execute("SELECT COUNT(*) FROM messages WHERE role='system'").fetchone()[0], 0)
-        # Early cashout stays local, including subsequent saves and delivery retries.
+        # Cashing out after three hands immediately sends one cumulative report.
         with money.connect(path) as db:
             db.execute('INSERT INTO bookkeeping VALUES (?,?,?,?,?)', ('fund','wallet_user',50,'test',1))
         state = money.open_table(path, 'texas-holdem', ['user', 'aion'], True, 2000)
-        game.act(state, 'user', {'action': 'fold'})
         with patch('sync_events.broadcast_synced', AsyncMock()):
-            await api._commit(state)
+            for hand in range(1, 4):
+                game.act(state, state['turn'], {'action': 'fold'})
+                await api._commit(state)
+                if hand < 3:
+                    game.next_round(state)
             with money.connect(path) as db:
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM chatroom_messages WHERE sender='system'").fetchone()[0], 1)
             await api.cashout('texas-holdem', api.Turn(game_id=state['id'], revision=state['revision']))
+            with money.connect(path) as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM chatroom_messages WHERE sender='system'").fetchone()[0], 2)
             closed = money.load(path, 'texas-holdem')
             await api._commit(closed)
             await api._deliver_reports()
         with money.connect(path) as db:
             cards = db.execute("SELECT content FROM chatroom_messages WHERE sender='system' ORDER BY created_at").fetchall()
-            self.assertEqual(len(cards), 1)
+            self.assertEqual(len(cards), 2)
+            self.assertIn('共完成 3 手', cards[-1][0])
             self.assertEqual(db.execute("SELECT COUNT(*) FROM messages WHERE role='system'").fetchone()[0], 0)
         self.assertEqual(money.pending_reports(path), [])
 
@@ -453,13 +491,13 @@ class TableReportTests(unittest.IsolatedAsyncioTestCase):
                     await api._commit(state)
                 with money.connect(path) as db:
                     count = db.execute("SELECT COUNT(*) FROM chatroom_messages WHERE sender='system'").fetchone()[0]
-                self.assertEqual(count, 2 if hand == 5 else 1)
+                self.assertEqual(count, 3 if hand == 5 else 2)
                 if hand < 5:
                     game.next_round(state)
             await api._commit(state)
         with money.connect(path) as db:
             cards = db.execute("SELECT content FROM chatroom_messages WHERE sender='system' ORDER BY created_at").fetchall()
-        self.assertEqual(len(cards), 2)
+        self.assertEqual(len(cards), 3)
         self.assertIn('共完成 5 手', cards[-1][0])
 
 

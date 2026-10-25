@@ -90,9 +90,7 @@ def _current(kind, body):
 async def _commit(state):
     state['revision'] += 1
     state['updated_at'] = time.time()
-    report = None
-    if state['phase'] == 'game_over':
-        report = await _closing_report(state)
+    report = await _closing_report(state)
     wallet.save(DB_PATH, state, report)
     if state.get('wallet', {}).get('status') == 'settled':
         await _notify_wallets()
@@ -100,8 +98,13 @@ async def _commit(state):
         await _deliver_reports()
 
 
+def _reportable(state):
+    return state['phase'] == 'game_over' or (
+        state['kind'] == 'texas-holdem' and state['phase'] == 'cancelled' and bool(state.get('rounds')))
+
+
 async def _closing_report(state):
-    if state['phase'] != 'game_over' or state.get('reported_table'):
+    if not _reportable(state) or state.get('reported_table'):
         return None
     try:
         target = await last_active_group()
@@ -121,7 +124,7 @@ async def _flush_reports():
     for report in wallet.pending_reports(DB_PATH):
         try:
             snapshot = report['state']
-            if snapshot['phase'] != 'game_over':
+            if not _reportable(snapshot):
                 wallet.update_report(DB_PATH, report, delivered=True)
                 continue
             if report.get('scope') != 'table' or not report.get('target'):
@@ -381,6 +384,10 @@ async def cashout(kind: str, body: Turn):
             wallet.cashout(DB_PATH, state)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        report = await _closing_report(state)
+        if report:
+            wallet.save(DB_PATH, state, report)
+            await _deliver_reports()
         if state.get('wallet'):
             await _notify_wallets()
         return _response(state)

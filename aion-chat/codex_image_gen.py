@@ -53,7 +53,7 @@ async def generate_codex_image(prompt, is_selfie=False, source_identity='', *, r
         raise RuntimeError('未安装 Codex CLI')
     refs = list(references or [])
     reference_bytes = None
-    if is_selfie:
+    if is_selfie and not references:
         from image_gen import _selfie_reference_path
         path = _selfie_reference_path(source_identity)
         # A missing anchor must not silently turn a requested portrait into a new face.

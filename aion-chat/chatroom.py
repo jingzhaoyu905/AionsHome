@@ -295,11 +295,16 @@ async def stream_connor_cli(prompt: str = None, *, messages: list[dict] = None, 
     if messages is None:
         messages = _build_connor_messages(prompt)
     else:
-        # 注入 persona 作为 system（如果 messages 中没有）
-        if not any(m["role"] == "system" for m in messages):
-            persona = _read_connor_persona()
-            if persona:
-                messages = [{"role": "system", "content": persona}] + messages
+        # 用户资料等也使用 system，只有已有同一份人设时才跳过注入。
+        persona = _read_connor_persona()
+        if persona and not any(
+            m["role"] == "system" and (
+                m.get("content", "") == persona
+                or m.get("content", "").endswith("\n" + persona)
+            )
+            for m in messages
+        ):
+            messages = [{"role": "system", "content": persona}] + messages
     messages = with_current_device_context(messages)
     codex_model = (MODELS.get("Codex") or {}).get("model", "")
     async for chunk in call_codex_cli(messages, codex_model, meta):
@@ -1142,14 +1147,11 @@ async def build_aion_group_context(
     wb = load_worldbook()
     user_name, ai_name, connor_name = get_chatroom_names()
     if wb.get("ai_persona"):
-        history.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        history.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        history.append({"role": "system", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
     if wb.get("user_persona"):
-        history.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
-        history.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
+        history.append({"role": "system", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
     if wb.get("system_prompt") and wb.get("system_prompt_enabled", True):
-        history.append({"role": "user", "content": f"[系统提示]\n{wb['system_prompt']}"})
-        history.append({"role": "assistant", "content": "收到，我会遵循这些规则。"})
+        history.append({"role": "system", "content": f"[系统提示]\n{wb['system_prompt']}"})
 
     # 1. 注入系统能力
     ability_block = await build_ability_block(
@@ -1249,11 +1251,9 @@ async def build_connor_group_context(
     # 0. Connor 人设（从全局配置读取）
     connor_full_persona = _read_connor_persona()
     if connor_full_persona:
-        history.append({"role": "user", "content": f"[系统设定 - 你的角色设定]\n{connor_full_persona}"})
-        history.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        history.append({"role": "system", "content": f"[系统设定 - 你的角色设定]\n{connor_full_persona}"})
     if wb.get("user_persona"):
-        history.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
-        history.append({"role": "assistant", "content": "收到，我会记住用户的信息。"})
+        history.append({"role": "system", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
 
     # 1. 注入系统能力
     ability_block = await build_ability_block(
@@ -1362,15 +1362,13 @@ async def build_connor_1v1_context(
     wb = load_worldbook()
     user_name, ai_name, connor_name = get_chatroom_names()
 
-    # 角色设定、用户信息、能力等作为前缀消息对
+    # 角色设定、用户信息使用 system，后接能力和对话上下文。
     connor_full_persona = _read_connor_persona()
     if connor_full_persona:
-        messages.append({"role": "user", "content": f"[你的角色设定]\n{connor_full_persona}"})
-        messages.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        messages.append({"role": "system", "content": f"[你的角色设定]\n{connor_full_persona}"})
 
     if wb.get("user_persona"):
-        messages.append({"role": "user", "content": f"[{user_name}信息]\n{wb['user_persona']}"})
-        messages.append({"role": "assistant", "content": "收到，我会记住用户的信息。"})
+        messages.append({"role": "system", "content": f"[{user_name}信息]\n{wb['user_persona']}"})
 
     ability_block = await build_ability_block(user_name, who="connor", whisper_mode=whisper_mode, profile_query=query_text)
     if ability_block:

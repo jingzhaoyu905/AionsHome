@@ -45,14 +45,7 @@ const Studio = (() => {
     modal('阅读字号',`<label for="readerSize">文字大小 · <span id="readerSizeValue">${size} px</span></label><input id="readerSize" type="range" min="12" max="24" value="${size}" oninput="Studio.readerSize(this.value)"><p class="field-help">调整立即生效，并自动记住。正文、对话和剧情讨论都会使用这个字号。</p>`,'完成',async()=>{});
   }
   function viewImage(url) {
-    const d=$('studioImageDialog');
-    $('studioFullImage').src=url;
-    $('studioImageOriginal').href=url;
-    $('studioSaveImage').onclick=()=>action(async()=>{
-      const btn=$('studioSaveImage');btn.disabled=true;
-      try {await saveIllustration(url);} finally {btn.disabled=false;}
-    });
-    d.showModal();
+    window.AionImageViewer.open(url, 0, { onSave: saveIllustration });
   }
   async function saveIllustration(url) {
     const response=await fetch(url);
@@ -601,23 +594,7 @@ const Studio = (() => {
     });
   }
   async function manageAnchors() {
-    anchors=await request('/anchors');
-    const list=[...anchors];
-    while(list.length<3) list.push({id:'anchor_'+(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2)),name:'',aliases:'',appearance:'',image:''});
-    modal('熟悉的人 · 人物锚点', `<p class="field-help">每张照片对应一个名字。外貌跟随照片，服饰与身份由每本故事决定。保存后在「故事与大纲」中选择出场人物。</p><div id="anchorCards">${list.map((a,i)=>`<section class="anchor-card" data-aid="${a.id}" data-image="${escHtml(a.image)}">${a.image?`<img src="${escHtml(a.image)}" alt="${escHtml(a.name)}">`:''}<label>名字</label><input data-field="name" value="${escHtml(a.name)}" placeholder="人物 ${i+1}"><label>别名（用逗号分隔）</label><input data-field="aliases" value="${escHtml(a.aliases)}"><label>固定外貌</label><input data-field="appearance" value="${escHtml(a.appearance)}" placeholder="发色、瞳色或其他特征"><label>锚点照片</label><input data-field="photo" type="file" accept="image/jpeg,image/png,image/webp"></section>`).join('')}</div>`, '保存人物', async()=>{
-      for (const el of document.querySelectorAll('.anchor-card')) {
-        const name=el.querySelector('[data-field=name]').value.trim(); if (!name) continue;
-        let image=el.dataset.image;
-        const file=el.querySelector('[data-field=photo]').files[0];
-        if (file) {
-          const fd=new FormData();fd.append('file',file);
-          const res=await fetch('/api/upload',{method:'POST',body:fd}), data=await res.json();
-          if (!res.ok || !data.url) throw Error(data.error||'照片上传失败'); image=data.url;
-        }
-        await request('/anchors/'+el.dataset.aid.replace(/^anchor_/,''),'PUT',{name,image,aliases:el.querySelector('[data-field=aliases]').value,appearance:el.querySelector('[data-field=appearance]').value});
-      }
-      showToast('人物锚点已保存');
-    });
+    return window.ImageAnchors.open();
   }
 
   function selectChapter(id) {

@@ -23,6 +23,7 @@ from ai_providers import stream_ai, CLI_STATUS_PREFIX
 from book import parse_epub, delete_book_files, build_annotate_text, BOOKS_DIR
 from context_builder import fetch_merged_timeline, render_merged_timeline
 from chatroom import stream_connor_cli, check_connor_online, _read_connor_persona, load_chatroom_config
+import reading_tts
 
 router = APIRouter()
 logger = logging.getLogger("book")
@@ -33,6 +34,102 @@ _TMP_DIR.mkdir(exist_ok=True)
 
 # ── 幂等锁：防止同一章节同一段重复批注 ──
 _annotating_locks: dict[str, asyncio.Lock] = {}  # key: "book_id:ch:seg"
+_speech_jobs: dict[tuple, dict] = {}
+READING_AUDIO_DIR = DATA_DIR / 'reading_audio'
+
+
+def _speech_dir(book_id: str, title: str = ''):
+    if not re.fullmatch(r'[a-zA-Z0-9_-]+', book_id):
+        raise HTTPException(400, '无效的书籍编号')
+    return reading_tts.book_audio_dir(READING_AUDIO_DIR, book_id, title)
+
+
+async def _speech_plan(book_id: str, ch_idx: int, narrator: str):
+    if narrator not in ('aion', 'connor'):
+        raise HTTPException(400, '请选择朗读伴侣')
+    data = await get_chapter(book_id, ch_idx)
+    cache_dir = _speech_dir(book_id, data.get('book_title') or '')
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    reading_tts.preserve_legacy_audio(BOOKS_DIR / book_id / 'tts', cache_dir)
+    return reading_tts.build_plan(data, load_chatroom_config(), narrator, cache_dir)
+
+
+def _public_speech_plan(book_id, ch_idx, plan):
+    result = {key: value for key, value in plan.items() if key != 'clips'}
+    result['clips'] = [dict(
+        **{key: value for key, value in clip.items() if key not in ('text', 'voice')},
+        url=f"/api/books/{book_id}/speech/audio/{clip['key']}",
+    ) for clip in plan['clips']]
+    job = _speech_jobs.get((book_id, ch_idx, plan['narrator']))
+    result['job'] = ({key: job[key] for key in ('state', 'completed', 'total', 'error')}
+                     if job and job['signature'] == plan['signature'] else None)
+    return result
+
+
+@router.get('/api/books/{book_id}/chapters/{ch_idx}/speech')
+async def get_chapter_speech(book_id: str, ch_idx: int, narrator: str = 'aion', signature: str = ''):
+    job = _speech_jobs.get((book_id, ch_idx, narrator))
+    if job and (signature == job['signature'] or (not signature and job['state'] == 'running')):
+        return _public_speech_plan(book_id, ch_idx, reading_tts.refresh_plan(job['plan'], _speech_dir(book_id)))
+    if signature:
+        # Recover completed cached playback after a restart when content is unchanged.
+        plan = await _speech_plan(book_id, ch_idx, narrator)
+        if plan['signature'] != signature:
+            raise HTTPException(409, '原朗读任务已中断，章节批注或音色已更新；已生成音频保留，请重新打开朗读设置')
+        return _public_speech_plan(book_id, ch_idx, plan)
+    return _public_speech_plan(book_id, ch_idx, await _speech_plan(book_id, ch_idx, narrator))
+
+
+class ChapterSpeechRequest(BaseModel):
+    narrator: str
+    signature: str
+
+
+@router.post('/api/books/{book_id}/chapters/{ch_idx}/speech')
+async def start_chapter_speech(book_id: str, ch_idx: int, body: ChapterSpeechRequest):
+    plan = await _speech_plan(book_id, ch_idx, body.narrator)
+    if plan['signature'] != body.signature:
+        raise HTTPException(409, '章节批注或音色已变化，请重新确认合成字数')
+    if plan['missing_voices']:
+        raise HTTPException(400, '请先在群聊配置音色：' + '、'.join(plan['missing_voices']))
+    key = (book_id, ch_idx, body.narrator)
+    existing = _speech_jobs.get(key)
+    if existing and not existing['task'].done():
+        if existing['signature'] != plan['signature']:
+            raise HTTPException(409, '本章之前的语音仍在合成，请稍后重试')
+        return _public_speech_plan(book_id, ch_idx, plan)
+    if not plan['missing_count']:
+        return _public_speech_plan(book_id, ch_idx, plan)
+    job = dict(plan=plan, signature=plan['signature'], state='running', completed=0,
+               total=len(plan['clips']), error='')
+
+    async def run():
+        try:
+            await reading_tts.synthesize_plan(plan, _speech_dir(book_id),
+                                              lambda count: job.update(completed=count))
+            job['state'] = 'done'
+        except asyncio.CancelledError:
+            job['state'] = 'cancelled'
+            raise
+        except Exception:
+            logger.exception('Chapter speech failed: %s', key)
+            job.update(state='error', error=f"第 {job['completed'] + 1}/{job['total']} 段合成失败，已完成的音频已保留，可重试补全")
+
+    job['task'] = asyncio.create_task(run())
+    _speech_jobs[key] = job
+    return _public_speech_plan(book_id, ch_idx, plan)
+
+
+@router.get('/api/books/{book_id}/speech/audio/{audio_key}')
+async def serve_chapter_speech(book_id: str, audio_key: str):
+    if not re.fullmatch(r'[a-f0-9]{64}', audio_key):
+        raise HTTPException(404, '语音不存在')
+    path = _speech_dir(book_id) / f'{audio_key}.mp3'
+    if not reading_tts.audio_ready(path) and not (BOOKS_DIR / book_id / 'tts' / '.reading-audio-imported.json').exists():
+        path = BOOKS_DIR / book_id / 'tts' / f'{audio_key}.mp3'
+    if not reading_tts.audio_ready(path):
+        raise HTTPException(404, '语音不存在，请重新打开朗读设置')
+    return FileResponse(path, media_type='audio/mpeg')
 
 
 # =============================================
@@ -163,6 +260,9 @@ async def get_chapter(book_id: str, ch_idx: int):
         if not chapter:
             raise HTTPException(404, "章节不存在")
 
+        book_row = await db.execute('SELECT title FROM books WHERE book_id = ?', (book_id,))
+        book_info = await book_row.fetchone()
+
         # 获取已有批注（区分 annotator）
         ann_rows = await db.execute("""
             SELECT segment_index, annotations, summary, updated_at, COALESCE(annotator, 'aion') as annotator
@@ -232,6 +332,7 @@ async def get_chapter(book_id: str, ch_idx: int):
     connor_name = cfg.get("connor_name", "Connor")
     return {
         "chapter": chapter,
+        "book_title": book_info['title'] if book_info else '',
         "annotations": aion_annotations_map,
         "connor_annotations": connor_annotations_map,
         "summaries": aion_summaries,
@@ -267,7 +368,17 @@ async def update_progress(book_id: str, body: ProgressUpdate):
 # =============================================
 @router.delete("/api/books/{book_id}")
 async def delete_book(book_id: str):
+    _speech_dir(book_id)
+    for key in list(_speech_jobs):
+        if key[0] == book_id:
+            job = _speech_jobs.pop(key)
+            job['task'].cancel()
+            await asyncio.gather(job['task'], return_exceptions=True)
     async with get_db() as db:
+        row = await db.execute('SELECT title FROM books WHERE book_id = ?', (book_id,))
+        book_info = await row.fetchone()
+        reading_tts.preserve_legacy_audio(BOOKS_DIR / book_id / 'tts',
+                                         _speech_dir(book_id, book_info[0] if book_info else ''))
         # 删数据库记录（CASCADE 会同时删 chapters 和 annotations）
         await db.execute("DELETE FROM books WHERE book_id = ?", (book_id,))
         await db.commit()

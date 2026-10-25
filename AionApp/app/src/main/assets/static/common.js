@@ -121,8 +121,8 @@ function connectCommonWS(extraHandler) {
     if (msg.type === "monitor_alert") {
       const data = msg.data || {};
       if (!data.phone_camera_native_capture) {
-        if (window.AionTtsAudio && typeof window.AionTtsAudio.play === 'function') {
-          window.AionTtsAudio.play('tts-monitor-alert', '/public/AionMonitoralart.mp3');
+        if (window.AionTtsAudio && typeof window.AionTtsAudio.playMonitorAlert === 'function') {
+          window.AionTtsAudio.playMonitorAlert();
         } else {
           const audio = new Audio('/public/AionMonitoralart.mp3');
           audio.play().catch(() => {});

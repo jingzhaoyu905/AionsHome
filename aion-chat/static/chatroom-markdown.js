@@ -35,7 +35,7 @@
         breaks: true,
         linkify: true,
         typographer: false,
-      }).disable('image')
+      }).disable(['image', 'strikethrough'])
     : null;
 
   if (parser) {

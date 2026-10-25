@@ -21,6 +21,7 @@ from codex_app_server import (
 )
 from codex_chat_profile import prepare_chat_model_catalog
 import antigravity_cli
+from config import antigravity_model_supports_audio
 from stream_safety import StreamActivity
 
 # CLI 状态前缀：yield 此前缀的 chunk 会被 _bg_generate 拦截为状态事件，不送入 TTS 和正文
@@ -425,6 +426,34 @@ def _openai_input_audio_format(fpath: Path, mime: str) -> str:
     return ""
 
 
+def _attachment_mime_type(att, fpath: Path) -> str:
+    mime = mimetypes.guess_type(str(fpath))[0] or "application/octet-stream"
+    if isinstance(att, dict) and att.get("type") == "voice":
+        # Browser audio-only recordings share containers/extensions with video.
+        return {".webm": "audio/webm", ".mp4": "audio/mp4"}.get(fpath.suffix.lower(), mime)
+    return mime
+
+
+def _openai_input_audio(fpath: Path, mime: str) -> dict:
+    audio_format = _openai_input_audio_format(fpath, mime)
+    if audio_format:
+        data = fpath.read_bytes()
+    else:
+        ffmpeg = shutil.which('ffmpeg')
+        if not ffmpeg:
+            raise ValueError('此音频格式需要 FFmpeg 转为 WAV，请安装 FFmpeg 并加入 PATH 后重启服务')
+        result = subprocess.run(
+            [ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-i', str(fpath),
+             '-vn', '-c:a', 'pcm_s16le', '-f', 'wav', 'pipe:1'],
+            capture_output=True, timeout=30,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        )
+        if result.returncode or not result.stdout:
+            raise ValueError('音频转换失败，请重新录音或上传 WAV/MP3 文件')
+        data, audio_format = result.stdout, 'wav'
+    return {"data": base64.b64encode(data).decode(), "format": audio_format}
+
+
 def build_multimodal_messages(history: list, *, include_audio: bool = False, include_video: bool = False):
     """将带附件的历史记录转换为 OpenAI 兼容多模态格式"""
     result = []
@@ -441,21 +470,21 @@ def build_multimodal_messages(history: list, *, include_audio: bool = False, inc
             for att in attachments:
                 fpath = _resolve_attachment_path(att)
                 if fpath and fpath.exists():
-                    mime = mimetypes.guess_type(str(fpath))[0] or "application/octet-stream"
-                    b64 = base64.b64encode(fpath.read_bytes()).decode()
+                    mime = _attachment_mime_type(att, fpath)
                     if mime.startswith("image/"):
+                        b64 = base64.b64encode(fpath.read_bytes()).decode()
                         parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
                         has_file_parts = True
                     elif mime.startswith("audio/"):
-                        audio_format = _openai_input_audio_format(fpath, mime)
-                        if include_audio and audio_format:
+                        if include_audio:
                             parts.append({
                                 "type": "input_audio",
-                                "input_audio": {"data": b64, "format": audio_format},
+                                "input_audio": _openai_input_audio(fpath, mime),
                             })
                             has_file_parts = True
                     elif mime.startswith("video/"):
                         if include_video:
+                            b64 = base64.b64encode(fpath.read_bytes()).decode()
                             parts.append({
                                 "type": "video_url",
                                 "video_url": {"url": f"data:{mime};base64,{b64}"},
@@ -477,9 +506,11 @@ def build_multimodal_messages(history: list, *, include_audio: bool = False, inc
 
 
 def build_gemini_contents(history: list, *, include_audio: bool = False):
-    """将带附件的历史记录转换为 Gemini 格式"""
+    """将对话转换为 Gemini 格式；system 由调用方放入 systemInstruction。"""
     contents = []
     for m in history:
+        if m["role"] == "system":
+            continue
         role = "user" if m["role"] == "user" else "model"
         attachments = m.get("attachments", [])
         if isinstance(attachments, str):
@@ -492,7 +523,7 @@ def build_gemini_contents(history: list, *, include_audio: bool = False):
             for att in attachments:
                 fpath = _resolve_attachment_path(att)
                 if fpath and fpath.exists():
-                    mime = mimetypes.guess_type(str(fpath))[0] or "image/jpeg"
+                    mime = _attachment_mime_type(att, fpath)
                     if mime.startswith("audio/") and not include_audio:
                         continue
                     b64 = base64.b64encode(fpath.read_bytes()).decode()
@@ -569,6 +600,12 @@ async def call_gemini(messages: list, model: str, meta: dict | None = None, temp
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={get_key('gemini')}"
     contents = build_gemini_contents(messages, include_audio=include_audio)
     payload = {"contents": contents, "safetySettings": GEMINI_SAFETY_SETTINGS}
+    system_parts = [
+        {"text": m["content"]} for m in messages
+        if m["role"] == "system" and m.get("content")
+    ]
+    if system_parts:
+        payload["systemInstruction"] = {"parts": system_parts}
     gen_config = {}
     if temperature is not None:
         gen_config["temperature"] = temperature
@@ -693,11 +730,16 @@ async def call_custom_openai(messages: list, cfg: dict, meta: dict | None = None
     api_key = (cfg.get("api_key") or "").strip()
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    api_messages = build_multimodal_messages(
-        messages,
-        include_audio=bool(cfg.get("audio", False)),
-        include_video=bool(cfg.get("video", False)),
-    )
+    try:
+        # Audio conversion must not block other chats on the event loop.
+        api_messages = await asyncio.to_thread(
+            build_multimodal_messages, messages,
+            include_audio=bool(cfg.get("audio", False)),
+            include_video=bool(cfg.get("video", False)),
+        )
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        yield f"[自定义中转站错误] 附件处理失败：{error}"
+        return
     payload = {"model": model, "messages": api_messages, "stream": True}
     if temperature is not None:
         payload["temperature"] = temperature
@@ -808,6 +850,7 @@ def _build_cli_prompt(
     *,
     copy_cr_uploads: bool = False,
     include_image_refs: bool = True,
+    include_audio_refs: bool = True,
 ) -> str:
     """将 messages 列表拼成供 CLI stdin 使用的完整 prompt。
     图片/音频附件转为本地绝对路径，由 CLI 自行读取文件（避免 base64 超长）。
@@ -816,7 +859,8 @@ def _build_cli_prompt(
     1. **自动收编伪系统回执对**：项目里历史习惯把人设/能力/记忆等系统配置塞成
        `[user(配置内容)] + [assistant("收到，我会...")]` 的伪对答对。这种结构会让
        Gemini 误以为是 agent 框架的 step-by-step 配置确认，进而开 thinking 模式。
-       这里在开头自动识别并合并成一个真正的 [System Instruction] 块，用 # 分节。
+       这里在开头自动识别，与显式 system 消息合并为 [System Instruction] 文本块。
+       这是 CLI prompt 内的分区，不等同于 API 原生的 system 角色。
     2. 连续同角色消息合并到同一个 [User]/[Assistant] 块，不重复发标签头
        —— 否则会出现连续 `[Assistant]` 这种伪 multi-turn 结构。
     3. 默认将图片/音频附件转换为 CLI 的 @路径语法；调用方可关闭图片引用，
@@ -837,8 +881,17 @@ def _build_cli_prompt(
     system_chunks: list[str] = []
     consume_until = 0
     i = 0
-    while i + 1 < len(messages):
+    while i < len(messages):
         m1 = messages[i]
+        if m1.get("role") == "system":
+            content = (m1.get("content", "") or "").strip()
+            if content:
+                system_chunks.append(content)
+            i += 1
+            consume_until = i
+            continue
+        if i + 1 >= len(messages):
+            break
         m2 = messages[i + 1]
         if (m1.get("role") == "user"
                 and m2.get("role") in ("assistant", "model")):
@@ -913,7 +966,7 @@ def _build_cli_prompt(
             safe_paths = [p.replace("\\", "/") for p in att_image_paths]
             at_refs = " ".join(f"@{p}" for p in safe_paths)
             text = (text + "\n" + at_refs).strip() if text else at_refs
-        if att_audio_paths:
+        if att_audio_paths and include_audio_refs:
             safe_paths = [p.replace("\\", "/") for p in att_audio_paths]
             at_refs = " ".join(f"@{p}" for p in safe_paths)
             text = (text + "\n" + at_refs).strip() if text else at_refs
@@ -945,6 +998,11 @@ def _build_cli_prompt(
 
 def _collect_cli_image_paths(messages: list) -> tuple[str, ...]:
     """收集用户消息中的本地图片，供支持原生图片参数的 CLI 使用。"""
+    return _collect_cli_media_paths(messages, "image/")
+
+
+def _collect_cli_media_paths(messages: list, mime_prefix: str) -> tuple[str, ...]:
+    """Collect unique local user attachments, including structured voice messages."""
     found: dict[str, str] = {}
     for message in messages:
         if message.get("role") != "user":
@@ -960,7 +1018,9 @@ def _collect_cli_image_paths(messages: list) -> tuple[str, ...]:
             if not fpath or not fpath.exists():
                 continue
             mime = mimetypes.guess_type(str(fpath))[0] or ""
-            if not mime.startswith("image/"):
+            if not (mime.startswith(mime_prefix) or (
+                mime_prefix == "audio/" and isinstance(attachment, dict) and attachment.get("type") == "voice"
+            )):
                 continue
             resolved = str(fpath.resolve())
             found[os.path.normcase(resolved)] = resolved
@@ -1158,25 +1218,32 @@ async def call_gemini_cli(messages: list, model: str, meta: dict | None = None,
 @logged_ai_call("antigravity_cli")
 async def call_antigravity_cli(messages: list, model: str, meta: dict | None = None,
                                temperature: float | None = None, max_tokens: int | None = None):
-    """Use the official stream; image turns get an image-reading companion agent."""
+    """Use the official stream with scoped image/audio attachment access."""
     binary = _find_antigravity_binary()
     if not binary:
         yield "[AntigravityCLI错误] 未找到 agy CLI，请先安装官方 Antigravity CLI"
         return
     image_paths = _collect_cli_image_paths(messages)
+    audio_paths = _collect_cli_media_paths(messages, "audio/") if antigravity_model_supports_audio(model) else ()
     image_numbers = {path: index for index, path in enumerate(image_paths, 1)}
+    audio_numbers = {path: index for index, path in enumerate(audio_paths, 1)}
     prompt_messages = []
     for message in messages:
         paths = _collect_cli_image_paths([message])
         if paths:
             labels = "、".join(f"图片{image_numbers[path]}" for path in paths)
             message = {**message, "content": (message.get("content") or "") + f"\n（图片附件：{labels}）"}
+        paths = _collect_cli_media_paths([message], "audio/") if audio_paths else ()
+        if paths:
+            labels = "、".join(f"音频{audio_numbers[path]}" for path in paths)
+            message = {**message, "content": (message.get("content") or "") + f"\n（语音附件：{labels}）"}
         prompt_messages.append(message)
-    prompt = _build_cli_prompt(prompt_messages, include_image_refs=False)
+    prompt = _build_cli_prompt(prompt_messages, include_image_refs=False, include_audio_refs=False)
     yield f"{CLI_STATUS_PREFIX}正在回复🚀…"
     try:
         async for event in antigravity_cli.stream_chat(
             binary, prompt, model, timeout=_antigravity_print_timeout(meta), image_paths=image_paths,
+            audio_paths=audio_paths,
         ):
             if event["kind"] == "text":
                 yield event["text"]

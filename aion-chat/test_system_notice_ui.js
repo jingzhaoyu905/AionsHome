@@ -110,7 +110,7 @@ function chatroomSystemRenderer() {
   const source = fs.readFileSync(path.join(ROOT, 'static', 'chatroom.js'), 'utf8');
   const blocks = [
     functionBlock(source, 'function crMsgMenuHtml', 'function crCanRateAiMsg'),
-    functionBlock(source, 'function msgHTML', 'let crMsgFeedbackPopover'),
+    functionBlock(source, 'function crPrivateWhisperNoteHtml', 'let crMsgFeedbackPopover'),
   ].join('\n');
   const context = {
     AVATARS: {},

@@ -102,24 +102,27 @@ class MemoryWrite(BaseModel):
 
 
 @router.get('/{store}')
-async def list_library(store: Store, view: Literal['memories', 'atoms'] = 'memories',
+async def list_library(store: Store, view: Literal['memories', 'atoms', 'unresolved'] = 'memories',
                        state: Literal['all', 'active', 'cold'] = 'all',
-                       kind: Literal['all', 'daily', 'long_term', 'friend'] = 'all',
+                       kind: Literal['all', 'daily', 'long_term', 'friend', 'unresolved'] = 'all',
                        q: str = Query('', max_length=200), start: Date | None = None,
                        end: Date | None = None, page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
     if start and end and start > end:
         raise HTTPException(400, '开始日期不能晚于结束日期')
     where, args = [_scope(store)], []
-    if view == 'memories':
+    unresolved_only = view == 'unresolved' or kind == 'unresolved'
+    if unresolved_only:
+        where.append('unresolved=1')
+    if view == 'memories' and not unresolved_only:
         where.append("COALESCE(archive_state,'active')='active'")
-    else:
+    elif view == 'atoms':
         # Durable facts distilled by compression have stage=0 too, but aren't originals.
         where.extend(["COALESCE(compression_stage,0)=0", "COALESCE(compression_batch_id,'')=''",
                       "COALESCE(source_memory_ids,'[]') IN ('[]','')"])
         if state != 'all':
             where.append("COALESCE(archive_state,'active')=?")
             args.append(state)
-    if kind != 'all':
+    if kind not in ('all', 'unresolved'):
         if store == 'main':
             if kind == 'friend':
                 where.append("LOWER(type)='friend'")

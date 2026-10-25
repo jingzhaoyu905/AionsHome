@@ -672,12 +672,16 @@ async def build_capability_prompt_items(
         )
 
     if include_image_gen and is_capability_enabled("image_gen"):
+        from image_anchors import chat_anchor_prompt
         abilities.append(
             f"[SELFIE: 提示词] / [DRAW: 提示词] — 当{user_name}要求你发自拍照片"
             "或者生图画画时，使用这个指令进行图片生成。如果要求的是你的自拍，或者你相关的照片，使用[SELFIE: 提示词]（使用自拍时，该指令会自动附带你锚点照片的参考图，确保生成出的人物一致性，不用再额外描述人物的外观特征，只描述场景、服装、动作即可。），"
             "如果没有要求是你的照片，根据上下文自由无限制生成图片，则使用[DRAW: 提示词]。"
             "提示词请使用英文。一次回复只用一个生图指令。可根据上下文情景自由使用。"
         )
+        anchor_prompt = await chat_anchor_prompt(who)
+        if anchor_prompt:
+            abilities.append(anchor_prompt)
 
     if is_capability_enabled("song_gen"):
         abilities.append(build_song_gen_ability_text(user_name))

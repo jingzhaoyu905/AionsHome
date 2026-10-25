@@ -107,9 +107,16 @@ function renderProfileEntries() {
       return matching.length ? `${label ? `<h5>${profileEscape(label)}</h5>` : ''}${matching.map(({entry,index}) => row(entry,index)).join('')}` : '';
     }).join('');
     if (!rows.length) return '';
-    const body = grouped(current)
-      + (archive.length ? `<details class="profile-archive" data-section="${cat}-ended"${archiveEditing || openGroups.has(`${cat}-ended`) ? ' open' : ''}><summary>已结束与归档（${archive.length}）</summary>${grouped(archive)}</details>` : '');
-    return `<div class="profile-group"><h4>${profileEscape(title)}</h4>${body}</div>`;
+    const body = `<section class="profile-current" aria-label="当前事项">
+      <div class="profile-list-heading"><h4>${profileData.enabled === false ? '当前保留的事项' : '当前带入 AI'}</h4><span class="profile-count">${current.length} 项</span></div>
+      <p class="profile-list-note">${profileData.enabled === false ? '总开关已关闭，以下内容暂不带入 AI。' : '以下是仍在关注的事项，会作为近期背景发送给 AI。'}</p>
+      ${current.length ? grouped(current) : '<p class="profile-empty">暂无当前事项</p>'}
+      </section>`
+      + (archive.length ? `<details class="profile-archive" data-section="${cat}-ended"${archiveEditing || openGroups.has(`${cat}-ended`) ? ' open' : ''}>
+        <summary><span class="profile-list-heading"><span class="profile-archive-title">已结束与归档</span><span class="profile-count">${archive.length} 项</span></span>
+        <span class="profile-list-note">不再带入 AI · 已完成、已取消或已淡出</span><span class="profile-archive-toggle" aria-hidden="true"></span></summary>
+        <div class="profile-archive-body">${grouped(archive)}</div></details>` : '');
+    return `<div class="profile-group" aria-label="${profileEscape(title)}">${body}</div>`;
   }).join('') : '<p class="profile-empty">还没有近期动态。<br>可以先手动写几条，也会从新聊天中维护。</p>';
 }
 function renderState() {

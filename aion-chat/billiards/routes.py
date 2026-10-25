@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from .companionship import chat, names, spoken_text
 from .engine import available
 from .service import get_service, potted_balls
-from .matches import match_info, is_active, summary, standings
+from .matches import match_info, is_active, has_history, summary, standings
 
 router = APIRouter()
 STATIC = Path(__file__).with_name('static')
@@ -100,12 +100,12 @@ async def lobby():
     games = service.store.all()
     return {'available': available(), 'names': names(),
             'games': [summary(g) for g in games if is_active(g)],
-            'standings': standings(games), 'history_count': sum(not is_active(g) for g in games)}
+            'standings': standings(games), 'history_count': sum(has_history(g) for g in games)}
 
 
 @router.get('/api/billiards/history')
 async def history(offset: int = Query(default=0, ge=0), limit: int = Query(default=10, ge=1, le=30)):
-    games = [g for g in get_service().store.all() if not is_active(g)]
+    games = [g for g in get_service().store.all() if has_history(g)]
     return {'games': [summary(g) for g in games[offset:offset+limit]],
             'total': len(games), 'has_more': offset + limit < len(games)}
 

@@ -24,7 +24,7 @@ h1{font-size:18px;letter-spacing:1px;font-weight:650;margin:0}
 .avatar{width:23px;height:23px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;font:12px Georgia,serif;background:var(--surface2);color:var(--accent)}
 .avatar.second{background:var(--surface2);color:var(--text2)}
 .store small{font-weight:400;font-size:11px;color:var(--text2)}
-.tabs{display:flex;align-items:center;border-bottom:1px solid var(--border);margin:7px 0 11px;gap:23px}
+.tabs{display:flex;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--border);margin:7px 0 11px;gap:0 23px}
 .tab{min-height:39px;padding:7px 0;border-bottom:2px solid transparent;color:var(--text2);font-size:14px}
 .tab[aria-selected=true]{border-color:var(--accent);color:var(--accent);font-weight:650}
 .tabs .help{margin-left:auto;font-size:11px;color:var(--text2)}
@@ -39,8 +39,8 @@ h1{font-size:18px;letter-spacing:1px;font-weight:650;margin:0}
 .filters[hidden]{display:none}
 .filters input{width:0;min-width:0;flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px;font-size:12px}
 .filters button{font-size:12px;color:var(--accent)}
-.meta-bar{display:flex;align-items:center;gap:5px;height:43px}
-.chips{display:flex;gap:3px}
+.meta-bar{display:flex;align-items:center;gap:5px;min-height:43px;height:auto;padding:5px 0}
+.chips{display:flex;flex-wrap:wrap;gap:3px;min-width:0}
 .chip{font-size:11px;padding:4px 9px;border-radius:5px;min-height:29px;color:var(--text2)}
 .chip[aria-pressed=true]{background:var(--surface2);color:var(--accent);font-weight:600}
 .count{margin-left:auto;color:var(--text2);font-size:11px;white-space:nowrap}
@@ -133,7 +133,7 @@ header .primary{min-height:34px;padding:5px 9px;font-size:12px}
 .entry-head{margin-bottom:4px}
 .bodytext{font-size:13px}
 .entry-foot{margin-top:5px}
-.meta-bar{height:39px}
+.meta-bar{min-height:39px}
 .paging{padding:0 12px;height:44px}
 .preview-footer{padding-bottom:max(5px,env(safe-area-inset-bottom));font-size:9px}
 .detail{display:none;position:fixed;z-index:5;bottom:0;left:0;right:0;border:0;border-radius:17px 17px 0 0;max-height:82dvh;height:auto;box-shadow:0 -10px 40px #30282022}

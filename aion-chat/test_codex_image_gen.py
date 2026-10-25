@@ -12,6 +12,13 @@ from test_album import sample_image
 
 
 class CodexImageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_timeout_is_not_swallowed(self):
+        with patch('image_anchors.resolve_chat_references', AsyncMock(return_value=('portrait', []))), \
+                patch('codex_image_gen.generate_codex_image', AsyncMock(side_effect=TimeoutError())), \
+                patch.dict(image_gen.SETTINGS, {'image_gen_provider': 'codex'}, clear=True):
+            with self.assertRaises(TimeoutError):
+                await image_gen.generate_chat_image('portrait')
+
     async def test_missing_image_keeps_provider_explanation_for_theater(self):
         import codex_image_gen as provider
         async def stream(*args, **kwargs):

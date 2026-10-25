@@ -42,7 +42,7 @@ def result_card(state, names):
     note = '免费练习 · 不变动钱包'
     if wallet:
         note = ('约定已取消，伴侣带入金额已全额退回。' if wallet['status'] == 'refunded'
-                else '伴侣剩余金额已退回钱包，你的金额仅记本桌。')
+                else '结算金额已从钱包自动扣除')
     card = dict(type='table_game_result', scope='table', title=title, round=state['round'],
                 rounds_completed=rounds, outcome=outcome, lines=lines, note=note)
     content = f'【{title} · 本场收桌结算】\n{outcome}\n' + '\n'.join(lines) + '\n' + note

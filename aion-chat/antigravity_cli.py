@@ -194,13 +194,16 @@ def _stage_image(source, target):
     return target
 
 
-async def stream_chat(binary, prompt, model, workspace=CHAT_WORKSPACE, timeout='10m', *, image_paths=()):
-    """Stage image attachments in the sole read-allowed directory for this turn."""
+async def stream_chat(binary, prompt, model, workspace=CHAT_WORKSPACE, timeout='10m', *, image_paths=(), audio_paths=()):
+    """Stage attachments in the sole read-allowed directory for this turn."""
+    from config import antigravity_model_supports_audio
+
+    audio_paths = audio_paths if antigravity_model_supports_audio(model) else ()
     workspace = Path(workspace)
     images_directory = workspace / 'images'
     require_chat_permissions()
-    prepare_chat_workspace(workspace, vision=bool(image_paths))
-    if not image_paths:
+    prepare_chat_workspace(workspace, vision=bool(image_paths or audio_paths))
+    if not image_paths and not audio_paths:
         async for event in _stream_chat(binary, prompt, model, workspace, timeout):
             yield event
         return
@@ -213,16 +216,23 @@ async def stream_chat(binary, prompt, model, workspace=CHAT_WORKSPACE, timeout='
             target = _stage_image(source, target)
             staged.append(str(target.resolve()))
         attachment_list = '\n'.join(f'图片{index}：{path}' for index, path in enumerate(staged, 1))
-        prompt = ('[System Instruction]\nThe user supplied these image attachments. '
-                  'Use view_file to inspect these images before answering; do not read other files. '
+        for index, path in enumerate(audio_paths, 1):
+            source = Path(path)
+            target = Path(directory) / f'audio-{index}{source.suffix.lower()}'
+            shutil.copyfile(source, target)
+            staged.append(str(target.resolve()))
+            attachment_list += f'\n音频{index}：{target.resolve()}'
+        prompt = ('[System Instruction]\nThe user supplied these image/audio attachments. '
+                  'Use view_file to inspect these attachments before answering; do not read other files. '
+                  'Listen to the original audio, including tone and non-speech sounds; transcription is only a reference. '
                   'Do not include internal file paths or file links in your reply.\n'
                   + attachment_list + '\n\n' + prompt)
         async for event in _stream_chat(binary, prompt, model, workspace, timeout,
-                                       agent=VISION_AGENT_NAME, image_paths=tuple(staged)):
+                                       agent=VISION_AGENT_NAME, attachment_paths=tuple(staged)):
             yield event
 
 
-async def _stream_chat(binary, prompt, model, workspace, timeout, *, agent=AGENT_NAME, image_paths=()):
+async def _stream_chat(binary, prompt, model, workspace, timeout, *, agent=AGENT_NAME, attachment_paths=()):
     """Yield visible deltas and usage; never recover replies from private databases."""
     from generation_control import own_process, terminate_process_tree
 
@@ -234,8 +244,8 @@ async def _stream_chat(binary, prompt, model, workspace, timeout, *, agent=AGENT
         final = None
         initialized = False
         try:
-            if image_paths:
-                image_manifest.write_text(json.dumps(image_paths, ensure_ascii=False), encoding='utf-8')
+            if attachment_paths:
+                image_manifest.write_text(json.dumps(attachment_paths, ensure_ascii=False), encoding='utf-8')
             process = own_process(await asyncio.create_subprocess_exec(
                 *build_chat_command(binary, model, timeout, agent=agent), cwd=str(workspace),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
@@ -273,11 +283,11 @@ async def _stream_chat(binary, prompt, model, workspace, timeout, *, agent=AGENT
                             info = step.get('tool_info') or {}
                             name = step.get('tool_name') or info.get('name')
                             path = (info.get('parameters') or {}).get('AbsolutePath', '')
-                            allowed = {os.path.normcase(str(Path(item).resolve())) for item in image_paths}
+                            allowed = {os.path.normcase(str(Path(item).resolve())) for item in attachment_paths}
                             if name != 'view_file' or not path or os.path.normcase(str(Path(path).resolve())) not in allowed:
                                 raise AntigravityError('AGY 陪伴模式出现未授权的原生工具调用，已停止：' + (name or 'unknown'))
                             if info.get('error'):
-                                raise AntigravityError('AGY 图片读取失败：' + str(info['error'].get('message', info['error'])))
+                                raise AntigravityError('AGY 附件读取失败：' + str(info['error'].get('message', info['error'])))
                             yield {'kind': 'activity'}
                             continue
                         if step.get('step_type') == 'agent_response' and initialized:
@@ -321,7 +331,7 @@ async def _stream_chat(binary, prompt, model, workspace, timeout, *, agent=AGENT
                 if process is not None:
                     await terminate_process_tree(process)
             finally:
-                if image_paths:
+                if attachment_paths:
                     image_manifest.unlink(missing_ok=True)
                 if stderr_task is not None:
                     if not stderr_task.done():

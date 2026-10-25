@@ -7,6 +7,29 @@ from unittest.mock import AsyncMock, patch
 
 
 class SessionsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_history_includes_settled_rack_while_series_can_continue(self):
+        from billiards.routes import history, lobby
+        game = await self.service.create(['aion', 'connor'], seed=17)
+        sid = game['id']
+        with patch('billiards.routes.get_service', return_value=self.service):
+            self.assertEqual((await history(offset=0, limit=10))['total'], 0)
+            await self.settle_rack(sid, 0)
+            saved_before = self.service.store.path(sid).read_bytes()
+            page = await history(offset=0, limit=1)
+            self.assertEqual([g['id'] for g in page['games']], [sid])
+            self.assertEqual(page['games'][0]['match']['status'], 'active')
+            self.assertFalse(page['has_more'])
+            self.assertEqual((await history(offset=1, limit=1))['games'], [])
+            home = await lobby()
+            self.assertEqual(home['history_count'], 1)
+            self.assertIn(sid, [g['id'] for g in home['games']])
+            self.assertEqual(self.service.store.path(sid).read_bytes(), saved_before)
+            await self.service.next_rack(sid, '')
+            self.assertEqual((await history(offset=0, limit=10))['total'], 1)
+            await self.settle_rack(sid, 0)
+            self.assertEqual((await history(offset=0, limit=10))['total'], 1)
+            self.assertEqual((await lobby())['games'], [])
+
     async def test_watch_creates_one_ai_table_and_resumes_without_reset(self):
         first, second = await asyncio.gather(self.service.watch(difficulty='low'), self.service.watch())
         self.assertEqual(first['id'], second['id'])

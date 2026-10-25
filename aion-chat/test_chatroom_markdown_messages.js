@@ -24,7 +24,7 @@ function loadMessageRenderer() {
     functionBlock(source, 'function crMsgSenderLineHtml', 'function crEnsureMsgMenu'),
     functionBlock(source, 'const CR_STRUCTURED_LINE_RE', 'let crProactiveCompanionshipStatus'),
     functionBlock(source, 'function crBubbleUnitHtml', 'function crBandVibrationNoteHtml'),
-    functionBlock(source, 'function msgHTML', 'let crMsgFeedbackPopover'),
+    functionBlock(source, 'function crPrivateWhisperNoteHtml', 'let crMsgFeedbackPopover'),
   ].join('\n');
 
   const context = {
@@ -51,6 +51,77 @@ function loadMessageRenderer() {
   vm.runInContext(`${rendererSource}\nthis.renderMessage = msgHTML;`, context);
   return context.renderMessage;
 }
+
+test('private whisper receipt is shown below the reply, including an empty public reply', () => {
+  for (const content of ['公开正文', '']) {
+    const message = { id: 'whisper', sender: 'aion', content, attachments: [{ type: 'private_whisper_sent', count: 1 }] };
+    const html = loadMessageRenderer()(message);
+    assert.match(html, /已给你发了私聊/);
+    assert.ok(html.indexOf('private-whisper-note') > html.indexOf('message-stack'));
+    assert.doesNotMatch(loadMessageRenderer()({ ...message, attachments: [] }), /已给你发了私聊/);
+  }
+});
+
+test('private whisper links use the original destination and preserve old receipts', () => {
+  for (const [sender, target_type, target_id, url] of [
+    ['aion', 'conversation', 'conv-old', '/chat?conv=conv-old'],
+    ['connor', 'room', 'room-old', '/chatroom?room=room-old'],
+  ]) {
+    const html = loadMessageRenderer()({ id: 'source', sender, content: '正文',
+      attachments: [{ type: 'private_whisper_sent', count: 1, target_type, target_id }] });
+    assert.ok(html.includes(`href="${url}"`));
+    assert.match(html, /<a class="private-whisper-note"/);
+  }
+  const old = loadMessageRenderer()({ id: 'old', sender: 'aion', content: '',
+    attachments: [{ type: 'private_whisper_sent', count: 1 }] });
+  assert.match(old, /已给你发了私聊/);
+  assert.doesNotMatch(old, /<a class="private-whisper-note"/);
+});
+
+test('private whisper navigation switches rooms repeatedly without reloading the chatroom page', async () => {
+  const source = fs.readFileSync(path.join(ROOT, 'static', 'chatroom.js'), 'utf8');
+  const calls = [];
+  const context = {
+    window: { parent: {
+      closeSubPage: skipReload => calls.push(['close', skipReload]),
+      selectConv: async id => calls.push(['conversation', id]),
+      openSubPage: url => calls.push(['page', url]),
+    } },
+    rooms: [{ id: 'room-old', type: 'connor_1v1' }],
+    currentRoom: { id: 'group', type: 'group' },
+    async selectRoom(id) {
+      context.currentRoom = context.rooms.find(room => room.id === id);
+      calls.push(['room', id]);
+    },
+    async api(path) {
+      assert.equal(path, '/rooms');
+      return [{ id: 'room-old', type: 'connor_1v1' }];
+    },
+    toast: message => assert.fail(message),
+  };
+  vm.createContext(context);
+  vm.runInContext(functionBlock(source, 'async function crOpenPrivateWhisper', 'function msgHTML'), context);
+  const event = { stopPropagation() {}, preventDefault() { calls.push(['prevent']); } };
+  await context.crOpenPrivateWhisper(event, { dataset: { targetType: 'conversation', targetId: 'conv-old' } });
+  assert.deepEqual(calls, [['prevent'], ['close', true], ['conversation', 'conv-old']]);
+  calls.length = 0;
+  const roomLink = { dataset: { targetType: 'room', targetId: 'room-old' }, getAttribute: () => '/chatroom?room=room-old' };
+  for (let click = 0; click < 2; click++) {
+    context.currentRoom = { id: 'group', type: 'group' };
+    await context.crOpenPrivateWhisper(event, roomLink);
+    assert.equal(context.currentRoom.id, 'room-old');
+    assert.deepEqual(calls, [['prevent'], ['room', 'room-old']]);
+    calls.length = 0;
+  }
+  context.window.parent = context.window;
+  context.rooms = []; // A newly created private room may not have arrived over WS yet.
+  await context.crOpenPrivateWhisper(event, roomLink);
+  assert.equal(context.currentRoom.id, 'room-old');
+  assert.deepEqual(calls, [['prevent'], ['room', 'room-old']]);
+  calls.length = 0;
+  await context.crOpenPrivateWhisper(event, { dataset: { targetType: 'conversation', targetId: 'conv-old' } });
+  assert.deepEqual(calls, []);
+});
 
 test('old background toy tags in either AI reply become folded display-only notices', () => {
   for (const sender of ['aion','connor']) {
@@ -99,7 +170,7 @@ test('markdown renders expressive text without executing raw HTML or remote imag
   const html = markdown.render([
     '# 大字报',
     '',
-    '**粗体**、*斜体*和~~删除线~~',
+    '**粗体**、*斜体*和~~啦啦啦~~',
     '',
     '> 先喝几口水。',
     '',
@@ -114,7 +185,8 @@ test('markdown renders expressive text without executing raw HTML or remote imag
   assert.match(html, /<h1>大字报<\/h1>/);
   assert.match(html, /<strong>粗体<\/strong>/);
   assert.match(html, /<em>斜体<\/em>/);
-  assert.match(html, /<s>删除线<\/s>/);
+  assert.match(html, /~~啦啦啦~~/);
+  assert.doesNotMatch(html, /<s>/);
   assert.match(html, /<blockquote>/);
   assert.match(html, /<ul>/);
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);

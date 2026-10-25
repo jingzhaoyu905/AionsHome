@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>陪伴阅读</title>
 <link rel="stylesheet" href="/static/common.css">
+<link rel="stylesheet" href="/static/reading-speech.css">
 <style>
 /* ── 书库视图 ── */
 .library-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -138,25 +139,20 @@
   border-radius: 8px;
 }
 
-/* 批注状态条 */
+/* 批注状态附在共读按钮上，不占阅读空间；点击可查看详细进度。 */
+.invite-control { position: relative; flex-shrink: 0; }
 .segment-status {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 16px;
-  background: var(--surface2);
-  font-size: 12px;
-  color: var(--text2);
-  flex-shrink: 0;
+  position: absolute; top: -5px; right: -5px; width: 16px; height: 16px;
+  padding: 0; border: 2px solid var(--surface); border-radius: 50%;
+  background: var(--surface2); color: var(--text3); font-size: 10px;
+  line-height: 12px; text-align: center; cursor: pointer;
 }
-.segment-status .seg-block {
-  width: 18px; height: 8px; border-radius: 3px;
-  background: var(--border); transition: background 0.3s;
-}
-.segment-status .seg-block.done { background: #66bb6a; }
-.segment-status .seg-block.annotating { background: var(--accent); animation: segPulse 1s infinite alternate; }
+.segment-status::after { content: ''; position: absolute; inset: -5px; }
+.segment-status[hidden] { display: none; }
+.segment-status[data-state="done"] { background: #589b67; color: white; }
+.segment-status[data-state="partial"] { color: var(--accent); }
+.segment-status[data-state="annotating"] { color: var(--accent); animation: segPulse 1s infinite alternate; }
 @keyframes segPulse { to { opacity: 0.5; } }
-.segment-status .seg-label { margin-left: auto; }
 
 /* AI 批注气泡 */
 .anno-bubble {
@@ -588,11 +584,29 @@
     <div class="reader-topbar">
       <button class="back-reader" onclick="closeReader()">‹</button>
       <span class="chapter-title" id="chapterTitle">-</span>
-      <button class="invite-btn" id="inviteBtn" onclick="inviteRead()">📝 共读</button>
+      <div class="invite-control">
+        <button class="invite-btn" id="inviteBtn" onclick="inviteRead()">📝 共读</button>
+        <button class="segment-status" id="segmentStatus" hidden onclick="showToast(this.title)" aria-label="批注进度"></button>
+      </div>
+      <button class="topbar-icon-btn" id="readingSpeechSettings" title="朗读设置" aria-label="朗读设置">⚙</button>
       <button class="topbar-icon-btn" onclick="toggleTOC()">☰</button>
     </div>
-    <!-- 批注状态条 -->
-    <div class="segment-status" id="segmentStatus"></div>
+    <div class="reading-speech-bar" id="readingSpeechBar" hidden>
+      <div class="reading-speech-timeline">
+        <span id="readingSpeechCurrent">0:00</span>
+        <input type="range" id="readingSpeechSeek" min="0" max="0" value="0" step="0.1" disabled aria-label="朗读播放进度">
+        <span id="readingSpeechDuration">已就绪 0:00</span>
+      </div>
+      <div class="reading-speech-controls">
+        <span id="readingSpeechNow" role="status"></span>
+        <span id="readingSpeechSynthesis"></span>
+        <button id="readingSpeechPause" data-playing="true" hidden title="暂停" aria-label="暂停">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><g class="pause-icon"><rect x="5" y="4" width="3" height="12" rx="1"/><rect x="12" y="4" width="3" height="12" rx="1"/></g><path class="play-icon" d="M6 3.5 16 10 6 16.5Z"/></svg>
+        </button>
+        <button id="readingSpeechStop" title="停止朗读" aria-label="停止朗读"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4.5" y="4.5" width="11" height="11" rx="1.5"/></svg></button>
+        <button id="readingSpeechRetry" hidden title="补全语音" aria-label="补全语音"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15 6a6 6 0 1 0 1 7M15 2v5h-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+    </div>
     <!-- 内容 -->
     <div class="reader-content" id="readerContent" onscroll="onReaderScroll()"></div>
     <!-- 底部：章节导航 -->
@@ -606,6 +620,17 @@
 </div>
 
 <!-- 高亮详情弹窗 -->
+<div class="reading-speech-panel" id="readingSpeechPanel" hidden>
+  <section class="reading-speech-card" role="dialog" aria-modal="true" aria-labelledby="readingSpeechTitle">
+    <div class="reading-speech-heading"><h3 id="readingSpeechTitle">听伴侣读书</h3><button id="readingSpeechClose" aria-label="关闭朗读设置">✕</button></div>
+    <label for="readingNarrator">这一章，由谁念给你听？</label>
+    <select id="readingNarrator"></select>
+    <p class="reading-speech-hint">使用群聊中配置的声音。批注和读后感由写下它们的伴侣亲口念给你听。</p>
+    <div id="readingSpeechStatus" role="status"></div>
+    <button id="readingSpeechStart">开始朗读</button>
+  </section>
+</div>
+
 <div class="hl-popup" id="hlPopup" onclick="if(event.target===this)closeHlPopup()">
   <div class="hl-popup-card">
     <div class="hl-quote" id="hlPopupQuote"></div>
@@ -792,6 +817,7 @@ async function openBook(bookId) {
 
 // ── 关闭阅读器 ──
 function closeReader() {
+  window.ReadingSpeech?.reset();
   saveProgress();
   $('libraryView').style.display = 'block';
   $('readerView').style.display = 'none';
@@ -803,13 +829,17 @@ function closeReader() {
 // ── 加载章节 ────────────────────────────────
 async function loadChapter(chIdx) {
   if (!currentBook || chIdx < 0 || chIdx >= currentBook.total_chapters) return;
+  window.ReadingSpeech?.reset();
   currentChIdx = chIdx;
+  const loadingBook = currentBook;
 
   const res = await api('GET', `/api/books/${currentBook.book_id}/chapters/${chIdx}`);
+  if (currentBook !== loadingBook || currentChIdx !== chIdx) return;
   chapterData = res;
   if (res.ai_name) aiName = res.ai_name;
   if (res.user_name) userName = res.user_name;
   if (res.connor_name) connorName = res.connor_name;
+  window.ReadingSpeech?.setChapter(currentBook.book_id, chIdx, [aiName, connorName]);
 
   // 标题 + 字数
   const title = res.chapter.title || `第 ${chIdx + 1} 章`;
@@ -842,16 +872,16 @@ async function loadChapter(chIdx) {
 
 function renderSegmentStatus(segments) {
   const bar = $('segmentStatus');
+  bar.hidden = !segments?.length;
   if (!segments || segments.length === 0) {
-    bar.style.display = 'none';
     return;
   }
-  bar.style.display = 'flex';
   const doneCount = segments.filter(s => s.status === 'done').length;
-  bar.innerHTML = segments.map(s =>
-    `<div class="seg-block ${s.status}"></div>`
-  ).join('') +
-    `<span class="seg-label">${doneCount}/${segments.length} 段已批注</span>`;
+  const working = segments.some(s => s.status === 'annotating');
+  bar.dataset.state = working ? 'annotating' : doneCount === segments.length ? 'done' : doneCount ? 'partial' : 'empty';
+  bar.textContent = working ? '…' : doneCount === segments.length ? '✓' : doneCount ? '◐' : '·';
+  bar.title = `${doneCount}/${segments.length} 段已批注${working ? '，正在共读…' : ''}`;
+  bar.setAttribute('aria-label', bar.title);
 }
 
 function renderChapter(data) {
@@ -1081,6 +1111,13 @@ function inviteRead() {
   const segments = chapterData.chapter.segments_meta || [];
   if (segments.length === 0) { showToast('当前章节无可批注内容'); return; }
 
+  const hasReadBefore = Object.keys(chapterData.annotations || {}).length > 0
+    || Object.keys(chapterData.connor_annotations || {}).length > 0
+    || (chapterData.summaries || []).length > 0
+    || (chapterData.connor_summaries || []).length > 0
+    || segments.some(segment => segment.status === 'done');
+  if (hasReadBefore && !confirm('当前已经共读过一次了，是否要重新共读？\n已有语音会保留，本次朗读继续使用原来的批注。')) return;
+
   // 开始批注所有段
   startAnnotateAll(segments);
 }
@@ -1213,15 +1250,9 @@ function mergeConnorAnnotations(newAnnos, summary, segIdx) {
 }
 
 function updateSegBlockStatus(segIdx, status) {
-  const blocks = $('segmentStatus').querySelectorAll('.seg-block');
-  if (blocks[segIdx]) {
-    blocks[segIdx].className = `seg-block ${status}`;
-  }
-  // 更新计数
-  const allBlocks = $('segmentStatus').querySelectorAll('.seg-block');
-  const doneN = [...allBlocks].filter(b => b.classList.contains('done')).length;
-  const label = $('segmentStatus').querySelector('.seg-label');
-  if (label) label.textContent = `${doneN}/${allBlocks.length} 段已批注`;
+  const segments = chapterData?.chapter.segments_meta || [];
+  if (segments[segIdx]) segments[segIdx].status = status;
+  renderSegmentStatus(segments);
 }
 
 // ── 选中文字 → 跳转聊天窗口提问 ────────────────────
@@ -1959,5 +1990,7 @@ async function deleteCurrentHighlight() {
   }
 }
 </script>
+<script src="/static/native-tts-audio.js"></script>
+<script src="/static/reading-speech.js"></script>
 </body>
 </html>

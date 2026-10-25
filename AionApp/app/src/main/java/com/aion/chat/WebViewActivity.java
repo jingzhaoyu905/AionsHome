@@ -73,6 +73,7 @@ public class WebViewActivity extends AppCompatActivity
     private PhoneCameraBridge phoneCameraBridge;
     private PrivateMemoBridge privateMemoBridge;
     private TtsAudioBridge ttsAudioBridge;
+    private LocalAsrBridge localAsrBridge;
     private String targetUrl;
     private boolean initialPageLoadStarted = false;
     private boolean pageLoaded = false;
@@ -142,7 +143,7 @@ public class WebViewActivity extends AppCompatActivity
                 getIntent().getStringExtra("url"),
                 launchPrefs.getBoolean("auto_connect", false),
                 launchPrefs.getString(
-                        "saved_url", "http://192.168.1.100:8080/chat"));
+                        "saved_url", "http://192.168.1.92:8080/chat"));
         if (launchUrl == null) {
             Intent launcherIntent = new Intent(this, LauncherActivity.class);
             launcherIntent.putExtra(
@@ -153,7 +154,7 @@ public class WebViewActivity extends AppCompatActivity
         }
         targetUrl = ConnectionEndpoint.normalizePageUrl(launchUrl);
         if (targetUrl == null || targetUrl.isEmpty()) {
-            targetUrl = "http://192.168.1.100:8080/chat";
+            targetUrl = "http://192.168.1.92:8080/chat";
         }
         startPushService(targetUrl);
 
@@ -270,6 +271,8 @@ public class WebViewActivity extends AppCompatActivity
         // 原生麦克风桥接（绕过 getUserMedia 的 HTTPS 限制）
         AudioBridge audioBridge = new AudioBridge(webView);
         webView.addJavascriptInterface(audioBridge, "AionAudio");
+        localAsrBridge = new LocalAsrBridge(this, webView, audioBridge);
+        webView.addJavascriptInterface(localAsrBridge, "AionLocalAsr");
 
         // 原生摄像头桥接（绕过 getUserMedia 的 HTTPS 限制）
         cameraBridge = new CameraBridge(webView);
@@ -925,6 +928,7 @@ public class WebViewActivity extends AppCompatActivity
     @Override
     protected void onResume() {
         super.onResume();
+        if (ttsAudioBridge != null) ttsAudioBridge.setForeground(true);
         AppSupervisionRuntime runtime = AppSupervisionRuntime.get();
         if (runtime != null) runtime.onAionsHomeForegroundChanged(true);
         activityResumed = true;
@@ -951,6 +955,8 @@ public class WebViewActivity extends AppCompatActivity
     @Override
     protected void onPause() {
         super.onPause();
+        if (localAsrBridge != null) localAsrBridge.cancelActive();
+        if (ttsAudioBridge != null) ttsAudioBridge.setForeground(false);
         AppSupervisionRuntime runtime = AppSupervisionRuntime.get();
         if (runtime != null) runtime.onAionsHomeForegroundChanged(false);
         activityResumed = false;
@@ -1128,6 +1134,7 @@ public class WebViewActivity extends AppCompatActivity
 
     @Override
     protected void onDestroy() {
+        if (localAsrBridge != null) localAsrBridge.shutdown();
         if (attentionCallDialog != null) attentionCallDialog.dismiss();
         mainHandler.removeCallbacksAndMessages(null);
         PhoneCameraPreviewCoordinator.shared().unregister(this);

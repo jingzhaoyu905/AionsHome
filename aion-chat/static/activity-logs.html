@@ -237,6 +237,8 @@
   margin:0 0 6px 32px; color:var(--text3); font-size:11px;
 }
 </style>
+<link rel="stylesheet" href="/static/image-viewer.css?v=20261024">
+<script src="/static/image-viewer.js?v=20261024"></script>
 </head>
 <body>
 <div class="sub-page">
@@ -503,7 +505,7 @@ function renderTimelineImages(atts) {
   const urls = atts.filter(u => typeof u === 'string' && u);
   if (!urls.length) return '';
   return `<div class="timeline-images">` + urls.map(url =>
-    `<img src="${escHtml(url)}" alt="配图" loading="lazy" onclick="window.open('${escHtml(url)}','_blank')">`
+    `<img src="${escHtml(url)}" alt="配图" loading="lazy" onclick="AionImageViewer.openFromElement(this)">`
   ).join('') + '</div>';
 }
 

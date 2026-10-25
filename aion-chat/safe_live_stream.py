@@ -182,9 +182,11 @@ class SafeLiveStreamGuard:
 class KnownCommandStreamFilter:
     """Hide known local control blocks while preserving them in raw text."""
 
-    def __init__(self):
+    def __init__(self, *, preserve_private_whispers: bool = False):
         self._pending = ""
         self._close_token = ""
+        self._preserve_private_whispers = preserve_private_whispers
+        self._preserved_command: str | None = None
         self._memory_search = False
         self._active_chars = 0
         self._active_tail = ""
@@ -223,6 +225,8 @@ class KnownCommandStreamFilter:
         known = bool(matched_prefix)
         partial = any(prefix.startswith(upper) for prefix in prefixes)
         if known:
+            if self._preserve_private_whispers and matched_prefix == "[悄悄话":
+                self._preserved_command = ""
             if upper.startswith("[SONG"):
                 self._close_token = "[/SONG]"
             elif candidate[0] == "【":
@@ -264,6 +268,8 @@ class KnownCommandStreamFilter:
                     consumed_chars = len(active_buf) - tail_chars
                     self._active_chars += consumed_chars
                     self._active_tail = active_buf[consumed_chars:]
+                    if self._preserved_command is not None:
+                        self._preserved_command += active_buf[:consumed_chars]
                     if self._active_chars + len(self._active_tail) > self._active_limit:
                         self.stop_reason = "quality"
                     return "".join(out)
@@ -271,6 +277,9 @@ class KnownCommandStreamFilter:
                 if self._active_chars + consumed > self._active_limit:
                     self.stop_reason = "quality"
                     return "".join(out)
+                if self._preserved_command is not None:
+                    out.append(self._preserved_command + active_buf[:consumed])
+                    self._preserved_command = None
                 buf = active_buf[consumed:]
                 self._close_token = ""
                 self._memory_search = False
@@ -335,10 +344,11 @@ async def consume_safe_live_stream(
     *,
     clock: Callable[[], float] = time.monotonic,
     idle_timeout: float | None = None,
+    preserve_private_whispers: bool = False,
 ) -> StreamSafetyResult:
     """Consume typed model text and expose only protocol-checked visible text."""
     guard = SafeLiveStreamGuard()
-    command_filter = KnownCommandStreamFilter()
+    command_filter = KnownCommandStreamFilter(preserve_private_whispers=preserve_private_whispers)
     iterator = source.__aiter__()
     started_at = clock()
     raw_parts: list[str] = []

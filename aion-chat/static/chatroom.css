@@ -678,6 +678,20 @@ button, input, textarea, select { font-family: inherit; }
   content: "💭 ";
   opacity: .85;
 }
+.private-whisper-note {
+  display: block;
+  width: fit-content;
+  margin-top: 6px;
+  color: var(--text3);
+  font-size: 12px;
+  line-height: 1.5;
+  text-decoration: none;
+}
+a.private-whisper-note:hover,
+a.private-whisper-note:focus-visible {
+  text-decoration: underline;
+}
+
 .band-vibration-line {
   color: var(--text3);
   font-size: 12px;

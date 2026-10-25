@@ -1,0 +1,32 @@
+.reading-speech-panel[hidden], .reading-speech-bar[hidden], .reading-speech-bar button[hidden] { display: none; }
+.reading-speech-panel {
+  position: fixed; inset: 0; z-index: 1100; background: rgba(0,0,0,.45);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.reading-speech-card {
+  width: 100%; max-width: 360px; padding: 20px; border-radius: 18px;
+  background: var(--surface); color: var(--text); box-shadow: 0 10px 45px #0003;
+}
+.reading-speech-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+.reading-speech-heading h3 { margin: 0; font-size: 17px; }
+.reading-speech-heading button { border: 0; background: none; color: var(--text2); padding: 8px; cursor: pointer; }
+.reading-speech-card label { display: block; font-size: 13px; margin-bottom: 8px; }
+.reading-speech-card select {
+  width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--surface2); color: var(--text); font-size: 15px;
+}
+.reading-speech-hint { color: var(--text3); font-size: 12px; line-height: 1.6; margin: 10px 0; }
+#readingSpeechStatus { white-space: pre-line; font-size: 13px; line-height: 1.7; margin: 16px 0; color: var(--text2); }
+#readingSpeechStart { width: 100%; border: 0; border-radius: 10px; padding: 12px; background: var(--accent); color: white; font-size: 14px; cursor: pointer; }
+#readingSpeechStart:disabled { opacity: .5; cursor: default; }
+.reading-speech-bar { display: flex; flex-direction: column; gap: 2px; padding: 6px 14px 4px; background: var(--surface2); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.reading-speech-controls, .reading-speech-timeline { display: flex; align-items: center; gap: 6px; width: 100%; }
+.reading-speech-timeline { font-size: 11px; color: var(--text2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+#readingSpeechSeek { flex: 1; min-width: 0; margin: 0; height: 20px; accent-color: var(--accent); }
+#readingSpeechSynthesis { max-width: 104px; flex-shrink: 0; font-size: 10px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#readingSpeechNow { flex: 1; min-width: 0; font-size: 12px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reading-speech-bar button { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 30px; height: 30px; padding: 6px; border: 0; border-radius: 50%; background: transparent; color: var(--text2); cursor: pointer; }
+.reading-speech-bar button:hover, .reading-speech-bar button:focus-visible { background: var(--surface); color: var(--accent); }
+.reading-speech-bar button svg { width: 18px; height: 18px; fill: currentColor; }
+#readingSpeechPause[data-playing="true"] .play-icon, #readingSpeechPause[data-playing="false"] .pause-icon { display: none; }
+#readerContent .reading-speaking { background: color-mix(in srgb, var(--accent) 13%, transparent); border-radius: 5px; }
