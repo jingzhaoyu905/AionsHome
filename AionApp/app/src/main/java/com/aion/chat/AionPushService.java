@@ -139,7 +139,7 @@ public class AionPushService extends Service {
     public static final String EXTRA_PHONE_CAMERA_ZOOM = "phone_camera_zoom";
     private static final String PREFS = "aion_prefs";
     private static final String PREF_SAVED_URL = "saved_url";
-    private static final String DEFAULT_PAGE_URL = "http://192.168.1.92:8080/chat";
+    private static final String DEFAULT_PAGE_URL = "http://192.168.1.100:8080/chat";
     private static final String RING_PREFS_NAME = "aion_ring_ble";
     private static final String KEY_RING_ENABLED = "ring_enabled";
 

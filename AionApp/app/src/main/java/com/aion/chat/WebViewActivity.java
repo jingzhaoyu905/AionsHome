@@ -143,7 +143,7 @@ public class WebViewActivity extends AppCompatActivity
                 getIntent().getStringExtra("url"),
                 launchPrefs.getBoolean("auto_connect", false),
                 launchPrefs.getString(
-                        "saved_url", "http://192.168.1.92:8080/chat"));
+                        "saved_url", "http://192.168.1.100:8080/chat"));
         if (launchUrl == null) {
             Intent launcherIntent = new Intent(this, LauncherActivity.class);
             launcherIntent.putExtra(
@@ -154,7 +154,7 @@ public class WebViewActivity extends AppCompatActivity
         }
         targetUrl = ConnectionEndpoint.normalizePageUrl(launchUrl);
         if (targetUrl == null || targetUrl.isEmpty()) {
-            targetUrl = "http://192.168.1.92:8080/chat";
+            targetUrl = "http://192.168.1.100:8080/chat";
         }
         startPushService(targetUrl);
 
